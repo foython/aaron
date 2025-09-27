@@ -63,14 +63,14 @@ def normal_register(request):
        
         subject = 'Here is your verification code'
         message = f'Hello, please verify your account with the OTP: {otp}'
-        from_email = 'support@gameplanai.co.uk'
+        from_email = 'bdcalltesting@gmail.com'
         recipient_list = [email]
 
         email_message = EmailMessage(subject, message, from_email, recipient_list)
         email_message.send()
         
         return Response(
-            {'message': 'OTP Sent Successfully.'},
+            {'Message': 'OTP Sent Successfully.'},
             status=201
         )
     except Exception as e:
@@ -150,7 +150,7 @@ def logout_view(request):
         token.blacklist()
         return Response(status=205)
     except Exception as e:
-        return Response({"detail": "Invalid token or token already blacklisted."}, status=400)
+        return Response({"Message": "Invalid token or token already blacklisted."}, status=400)
     
 
     
@@ -164,20 +164,20 @@ def request_email_change_otp(request):
     
     if not old_email or not new_email or not user:
         return Response(
-            {"message": "Both old and new email addresses are required."},
+            {"Message": "Both old and new email addresses are required."},
             status=status.HTTP_400_BAD_REQUEST
         )        
  
     if user.email.lower() == new_email.lower():
         return Response(
-            {"message": "The provided new email matched with your current email."},
+            {"Message": "The provided new email matched with your current email."},
             status=status.HTTP_400_BAD_REQUEST
         )
    
    
     if User.objects.filter(username=new_email).exists():
         return Response(
-            {"message": "This new email is already in use by another user."},
+            {"Message": "This new email is already in use by another user."},
             status=status.HTTP_400_BAD_REQUEST
         )
         
@@ -186,7 +186,7 @@ def request_email_change_otp(request):
 
         subject = 'Verify your new email address'
         message = f'Hello, here is your OTP to verify your new email:{otp}'
-        from_email = 'support@gameplanai.co.uk'
+        from_email = 'bdcalltesting@gmail.com'
         recipient_list = [new_email]
 
         email = EmailMessage(subject, message, from_email, recipient_list)
@@ -194,7 +194,7 @@ def request_email_change_otp(request):
     
         return Response( {                
                 
-                'message': 'OTP Sent Successfully.'
+                'Message': 'OTP Sent Successfully.'
             }, 
             status=201
         )
@@ -308,7 +308,7 @@ def change_password(request):
    
     if not old_password or not new_password:
         return Response(
-            {"message": "All fields are required: old_password and new_password."},
+            {"Message": "All fields are required: old_password and new_password."},
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -316,7 +316,7 @@ def change_password(request):
   
     if not user.check_password(old_password):
         return Response(
-            {"message": "Incorrect old password."},
+            {"Message": "Incorrect old password."},
             status=status.HTTP_400_BAD_REQUEST
         )
    
@@ -324,7 +324,7 @@ def change_password(request):
     user.save()
 
     return Response(
-        {"message": "Password changed successfully."},
+        {"Message": "Password changed successfully."},
         status=status.HTTP_200_OK
     )
 
@@ -349,7 +349,7 @@ def forget_password(request):
 
         subject = 'Here is your verification code'
         message = f'Hello, please verify your account with the OTP: {otp}'
-        from_email = 'support@gameplanai.co.uk'
+        from_email = 'bdcalltesting@gmail.com'
         recipient_list = [email]
 
         email = EmailMessage(subject, message, from_email, recipient_list)
@@ -435,7 +435,7 @@ def forgot_password_change(request):
 def edit_profile(request):
     
     try:
-        user = request.user
+        user = request.user      
     except CustomUser.DoesNotExist:
         return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
     
@@ -466,14 +466,14 @@ def resend_otp(request):
 
     try:
        
-        user = User.objects.get(email=email) # Using email field is more direct
+        user = User.objects.get(username=email) # Using email field is more direct
 
        
         otp = user.generate_otp()
         
         subject = 'Here is your verification code'
         message = f'Hello, you have requested an OTP for verification, here is your otp: {otp}'
-        from_email = 'pialzoad@gmail.com'
+        from_email = 'bdcalltesting@gmail.com'
         recipient_list = [email]
 
         email_message = EmailMessage(subject, message, from_email, recipient_list)
@@ -541,7 +541,7 @@ def social_login_check(request):
     email = request.data.get('email')
 
     if not email:
-        return Response({"message": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"Message": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
 
     
     try:
@@ -551,7 +551,7 @@ def social_login_check(request):
         
         if user_profile.auth_provider == "normal":
             return Response(
-                {"message": "Please use email/password based login!"},
+                {"Message": "Please use email/password based login!"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -568,6 +568,6 @@ def social_login_check(request):
     except User.DoesNotExist:
         
         return Response(
-            {"message": "User not registered. Please sign up first."},
+            {"Message": "User not registered. Please sign up first."},
             status=status.HTTP_404_NOT_FOUND
         )
