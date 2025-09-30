@@ -52,3 +52,23 @@ class DefineColumns(TimeStamp):
     
 
 
+class HappyPath(TimeStamp):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE)
+    path = models.TextField()
+
+    def __str__(self):
+        return f"Actual Path for {self.project.process}"
+    
+
+
+class IdealPath(models.Model):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE)     
+    serial_number = models.IntegerField()
+    activity_name = models.CharField(max_length=100)   
+    average_time_minutes = models.DecimalField(max_digits=8, decimal_places=2)
+
+    class Meta:        
+        ordering = ['serial_number']
+
+    def __str__(self):
+        return f"Step {self.serial_number}: {self.activity_name} ({self.average_time_minutes} min)"
