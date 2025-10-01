@@ -409,13 +409,13 @@ def bottleneck_and_ratio(request, pk=None):
         event_log_data = df_log.to_dict('records')
 
         # 3. Calculate the total cases (returns a JSON string)
-        total_loops_ratio = calculate_bottleneck_metrics(event_log_data=event_log_data,
+        result = calculate_bottleneck_metrics(event_log_data=event_log_data,
                 case_id_col=columns.case_id,
                 activity_col=columns.activity,
                 start_time_col=columns.timestamp_start,
                 complete_time_col=columns.timestamp_end
         )
-        result_data = json.loads(total_loops_ratio)
+        result_data = json.loads(result)
         
         return Response(result_data) 
 
@@ -446,8 +446,8 @@ def cal_step_and_cases(request, pk=None):
         event_log_data = df_log.to_dict('records')
 
         # 3. Calculate the total cases (returns a JSON string)
-        total_loops_ratio = calculate_steps_per_case_metrics(event_log_data, columns.case_id)
-        result_data = json.loads(total_loops_ratio)
+        result = calculate_steps_per_case_metrics(event_log_data, columns.case_id)
+        result_data = json.loads(result)
         
         return Response(result_data) 
 
@@ -478,8 +478,8 @@ def dropout_rate(request, pk=None):
         event_log_data = df_log.to_dict('records')
 
         # 3. Calculate the total cases (returns a JSON string)
-        total_loops_ratio = calculate_dropout_rate(event_log_data, columns.case_id, columns.activity, columns.timestamp_end)
-        result_data = json.loads(total_loops_ratio)
+        result = calculate_dropout_rate(event_log_data, columns.case_id, columns.activity, columns.timestamp_end)
+        result_data = json.loads(result)
         
         return Response(result_data) 
 
@@ -510,8 +510,8 @@ def average_activity_time(request, pk=None):
         event_log_data = df_log.to_dict('records')
 
         # 3. Calculate the total cases (returns a JSON string)
-        total_loops_ratio = calculate_average_activity_duration(event_log_data, columns.activity,columns.timestamp_start, columns.timestamp_end)
-        result_data = json.loads(total_loops_ratio)
+        result = calculate_average_activity_duration(event_log_data, columns.activity,columns.timestamp_start, columns.timestamp_end)
+        result_data = json.loads(result)
         
         return Response(result_data) 
 
@@ -542,8 +542,8 @@ def process_variants(request, pk=None):
         event_log_data = df_log.to_dict('records')
 
         # 3. Calculate the total cases (returns a JSON string)
-        total_loops_ratio = calculate_process_variants(event_log_data, columns.case_id, columns.activity, columns.timestamp_end)
-        result_data = json.loads(total_loops_ratio)
+        result = calculate_process_variants(event_log_data, columns.case_id, columns.activity, columns.timestamp_end)
+        result_data = json.loads(result)
         
         return Response(result_data) 
 
@@ -555,3 +555,332 @@ def process_variants(request, pk=None):
         # Return a clean error message
         return Response({"error": str(e)}, status=500)
 
+
+
+
+
+@api_view(['GET'])
+def top_variants(request, pk=None):
+    try:
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_top_variants(
+            event_log_data,
+            columns.case_id,
+            columns.activity,
+            columns.timestamp_end,
+            top_n=5 # Default to Top 5
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+
+
+
+@api_view(['GET'])
+def first_pass_rate(request, pk=None):
+    try:
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_first_pass_rate(
+            event_log_data,
+            columns.case_id,
+            columns.activity
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+
+@api_view(['GET'])
+def longest_waiting_time(request, pk=None):
+    try:
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_longest_waiting_time_step(
+            event_log_data,
+            columns.case_id,
+            columns.activity,
+            columns.timestamp_start,
+            columns.timestamp_end
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+
+
+
+@api_view(['GET'])
+def variant_complexity_index(request, pk=None):
+    try:
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_variant_complexity_index(
+            event_log_data,
+            columns.case_id,
+            columns.activity,
+            columns.timestamp_end
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+
+
+
+@api_view(['GET'])
+def variant_change_over_time(request, pk=None):
+    try:
+        time_param = request.query_params.get('time', None)
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_variant_change_over_time(
+            event_log_data,
+            columns.case_id,
+            columns.activity,
+            columns.timestamp_end,
+            time_period=time_param.upper() # 'D' for Daily, 'W' for Weekly, 'M' for Monthly
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+    
+
+    
+@api_view(['GET'])
+def cases_following_top_variant(request, pk=None):
+    try:
+        
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_cases_following_top_variant(
+            event_log_data,
+            columns.case_id,
+            columns.activity,
+            columns.timestamp_end
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+    
+
+
+@api_view(['GET'])
+def max_steps_in_a_case(request, pk=None):
+    try:
+        
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_max_steps_in_a_case(event_log_data, columns.case_id)
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+    
+
+
+@api_view(['GET'])
+def activity_frequency_distribution(request, pk=None):
+    try:
+        
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_activity_frequency_distribution(event_log_data, columns.activity)
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+    
+
+
+@api_view(['GET'])
+def time_saved_potential(request, pk=None):
+    try:
+        
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_time_saved_potential(
+            event_log_data, 
+            columns.case_id, 
+            columns.timestamp_start, 
+            columns.timestamp_end
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)

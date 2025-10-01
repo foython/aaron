@@ -1,5 +1,7 @@
 import pandas as pd
+from datetime import timedelta
 import json
+import math
 
 def analyze_standard_path_performance_json(file_path):
     # 1. Load the data (assuming CSV, adjust sep if needed)
@@ -843,3 +845,602 @@ def calculate_process_variants(
 
     except Exception as e:
         return json.dumps({"Error": f"An error occurred during process variant calculation: {e}"}, indent=4)
+    
+
+
+def calculate_top_variants(
+    event_log_data,
+    case_id_col,
+    activity_col,
+    complete_time_col,
+    top_n=5 # Default to Top 5
+):
+    """
+    Calculates and returns the Top N most frequent process variants (traces) 
+    with their absolute counts and percentage shares.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        required_cols = [case_id_col, activity_col, complete_time_col] 
+        if not all(col in df.columns for col in required_cols):
+             missing = [col for col in required_cols if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
+        
+        # 1. Sort events within each case by completion time to determine the correct sequence (trace)
+        df_sorted = df.sort_values(by=[case_id_col, complete_time_col])
+
+        # 2. Group by case ID and aggregate the activity column into an ordered list
+        case_traces = df_sorted.groupby(case_id_col)[activity_col].apply(list).reset_index()
+
+        # 3. Convert the activity list into a variant string (e.g., 'A -> B -> C')
+        case_traces['Variant'] = case_traces[activity_col].apply(lambda x: ' -> '.join(x))
+        
+        # 4. Count the frequency of each unique variant (Sorted Descending by Count)
+        variant_counts = case_traces['Variant'].value_counts()
+        total_cases = len(case_traces)
+        
+        # 5. Extract Top N variants
+        top_variants_data = []
+
+        # Iterate over the top N items in the sorted variant counts
+        for variant, count in variant_counts.head(top_n).items():
+            percentage = (count / total_cases) * 100 if total_cases > 0 else 0.0
+            
+            top_variants_data.append({
+                "Variant_Trace": variant,
+                "Count": int(count),
+                "Percentage": round(percentage, 2)
+            })
+            
+        # 6. Format Output
+        result = {
+            "Total_Unique_Process_Variants": len(variant_counts),
+            "Total_Cases_Analyzed": int(total_cases),
+            "Top_Process_Variants": top_variants_data
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during process variant calculation: {e}"}, indent=4)
+    
+
+
+
+def calculate_first_pass_rate(
+    event_log_data,
+    case_id_col,
+    activity_col
+):
+    """
+    Calculates the First Pass Rate (FPR), which is the percentage of cases 
+    that complete the process without any loops or rework.
+    A case is 'First Pass' if the total number of events equals the number 
+    of unique activities.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        required_cols = [case_id_col, activity_col]
+        if not all(col in df.columns for col in required_cols):
+             missing = [col for col in required_cols if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        # 1. Calculate Total Events and Unique Activities per Case
+        case_metrics = df.groupby(case_id_col).agg(
+            Total_Events_Per_Case=(case_id_col, 'count'),
+            Unique_Activities_Per_Case=(activity_col, 'nunique')
+        ).reset_index()
+        
+        # 2. Identify First Pass cases
+        # A case is First Pass if Total Events == Unique Activities (i.e., Loops = 0)
+        case_metrics['Is_First_Pass'] = (
+            case_metrics['Total_Events_Per_Case'] == case_metrics['Unique_Activities_Per_Case']
+        )
+        
+        # 3. Aggregate results
+        total_cases = len(case_metrics)
+        first_pass_cases = case_metrics['Is_First_Pass'].sum()
+        
+        # 4. Calculate Rate
+        first_pass_rate = (first_pass_cases / total_cases) * 100 if total_cases > 0 else 0.0
+
+        # 5. Format Output
+        result = {
+            "Total_Cases_Analyzed": int(total_cases),
+            "First_Pass_Cases": int(first_pass_cases),
+            "Rework_Cases": int(total_cases - first_pass_cases),
+            "First_Pass_Rate_Percentage": round(first_pass_rate, 2),
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during First Pass Rate calculation: {e}"}, indent=4)
+
+
+
+
+def calculate_longest_waiting_time_step(
+    event_log_data,
+    case_id_col,
+    activity_col,
+    start_time_col,
+    complete_time_col
+):
+    """
+    Calculates the activity pair (A -> B) with the longest AVERAGE waiting time.
+    Waiting time = B_start_time - A_complete_time.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+    
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        required_cols = [case_id_col, activity_col, start_time_col, complete_time_col]
+        if not all(col in df.columns for col in required_cols):
+             missing = [col for col in required_cols if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        df[start_time_col] = pd.to_datetime(df[start_time_col], utc=True)
+        df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
+
+        # 1. Sort the log by case ID and completion time to define the flow sequence
+        df_sorted = df.sort_values(by=[case_id_col, complete_time_col]).reset_index(drop=True)
+        
+        # 2. Identify the subsequent event's start time and activity using shift()
+        # This operation is grouped by case ID to ensure the shift only happens within the same case
+        df_sorted['Next_Activity'] = df_sorted.groupby(case_id_col)[activity_col].shift(-1)
+        df_sorted['Next_Start_Time'] = df_sorted.groupby(case_id_col)[start_time_col].shift(-1)
+
+        # 3. Filter out the last event of each case (where Next_Activity is NaN)
+        df_transitions = df_sorted.dropna(subset=['Next_Activity']).copy()
+
+        # 4. Calculate Waiting Time
+        # Waiting Time = Next Activity Start Time - Current Activity Complete Time
+        df_transitions['Waiting_Time_Seconds'] = (
+            df_transitions['Next_Start_Time'] - df_transitions[complete_time_col]
+        ).dt.total_seconds()
+        
+        # Filter out negative waiting times (should not happen with good data, but prevents errors)
+        df_transitions = df_transitions[df_transitions['Waiting_Time_Seconds'] >= 0]
+        
+        # 5. Group by transition pair (Current Activity -> Next Activity) and calculate the average
+        transition_metrics = df_transitions.groupby([activity_col, 'Next_Activity'])['Waiting_Time_Seconds'].agg(
+            Average_Waiting_Time_Seconds='mean',
+            Transition_Count='count'
+        ).reset_index()
+        
+        if transition_metrics.empty:
+            return json.dumps({
+                "Longest_Waiting_Time_Step": "N/A",
+                "Max_Average_Waiting_Time_Hours": 0.0,
+                "Total_Transitions_Analyzed": 0
+            }, indent=4)
+
+        # 6. Identify the longest average waiting time step
+        longest_wait_step = transition_metrics.loc[
+            transition_metrics['Average_Waiting_Time_Seconds'].idxmax()
+        ]
+
+        # 7. Format Output
+        
+        max_avg_wait_seconds = longest_wait_step['Average_Waiting_Time_Seconds']
+        
+        result = {
+            "Longest_Waiting_Time_Step": f"{longest_wait_step[activity_col]} -> {longest_wait_step['Next_Activity']}",
+            "Max_Average_Waiting_Time_Hours": round(max_avg_wait_seconds / 3600, 2),
+            "Max_Average_Waiting_Time_Seconds": round(max_avg_wait_seconds, 2),
+            "Total_Transitions_Analyzed": int(len(df_transitions))
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during waiting time step calculation: {e}"}, indent=4)
+
+
+
+def calculate_variant_complexity_index(
+    event_log_data,
+    case_id_col,
+    activity_col,
+    complete_time_col
+):
+    """
+    Calculates the Variant Complexity Index (VCI), which is the ratio of 
+    the total number of unique process variants to the total number of cases.
+    VCI = Total Unique Variants / Total Cases
+    A VCI closer to 1.0 indicates high diversity/low standardization.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        required_cols = [case_id_col, activity_col, complete_time_col] 
+        if not all(col in df.columns for col in required_cols):
+             missing = [col for col in required_cols if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
+        
+        # 1. Sort events within each case by completion time to determine the correct sequence (trace)
+        df_sorted = df.sort_values(by=[case_id_col, complete_time_col])
+
+        # 2. Group by case ID and aggregate the activity column into an ordered list (the trace)
+        case_traces = df_sorted.groupby(case_id_col)[activity_col].apply(list).reset_index()
+
+        # 3. Convert the activity list into a variant string for easy counting
+        case_traces['Variant'] = case_traces[activity_col].apply(lambda x: ' -> '.join(x))
+        
+        # 4. Count the frequency of each unique variant
+        variant_counts = case_traces['Variant'].value_counts()
+        
+        # 5. Extract metrics
+        total_unique_variants = len(variant_counts)
+        total_cases = len(case_traces)
+        
+        # 6. Calculate VCI
+        variant_complexity_index = (
+            total_unique_variants / total_cases
+        ) if total_cases > 0 else 0.0
+
+        # 7. Format Output
+        result = {
+            "Total_Cases_Analyzed": int(total_cases),
+            "Total_Unique_Process_Variants": int(total_unique_variants),
+            "Variant_Complexity_Index": round(variant_complexity_index, 4), # Ratio (0.0 to 1.0)
+            "Variant_Complexity_Index_Percentage": round(variant_complexity_index * 100, 2)
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during VCI calculation: {e}"}, indent=4)
+
+
+
+def calculate_variant_change_over_time(
+    event_log_data,
+    case_id_col,
+    activity_col,
+    complete_time_col,
+    time_period='W' # 'D' for Daily, 'W' for Weekly, 'M' for Monthly
+):
+    """
+    Calculates the trend of unique process variant counts over specified time periods.
+    This shows how process diversity (complexity) changes over time.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+
+    if time_period.upper() not in ['D', 'W', 'M']:
+        return json.dumps({"Error": f"Invalid time_period: {time_period}. Must be 'D', 'W', or 'M'."}, indent=4)
+
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        required_cols = [case_id_col, activity_col, complete_time_col] 
+        if not all(col in df.columns for col in required_cols):
+             missing = [col for col in required_cols if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
+        
+        # 1. Determine the trace/variant for every case
+        df_sorted = df.sort_values(by=[case_id_col, complete_time_col])
+        case_traces = df_sorted.groupby(case_id_col).agg(
+            Variant=(activity_col, lambda x: ' -> '.join(x)),
+            Case_End_Time=(complete_time_col, 'max') # Use the last event's completion time to anchor the case
+        ).reset_index()
+
+        # 2. Group cases by the specified time period
+        # Use pandas PeriodIndex for grouping and consistent time labels
+        case_traces['Time_Period'] = case_traces['Case_End_Time'].dt.to_period(time_period.upper())
+        
+        # 3. Calculate metrics for each period
+        # Count the number of unique variants and the total number of cases completed
+        time_trend = case_traces.groupby('Time_Period').agg(
+            Unique_Variant_Count=('Variant', 'nunique'),
+            Total_Cases_Completed=('case_id', 'count')
+        ).reset_index()
+
+        # 4. Calculate the Variant Complexity Index (VCI) per period
+        time_trend['Variant_Complexity_Index'] = (
+            time_trend['Unique_Variant_Count'] / time_trend['Total_Cases_Completed']
+        )
+        
+        # 5. Format Output
+        
+        # Convert PeriodIndex object to a readable string
+        time_trend['Time_Period_Label'] = time_trend['Time_Period'].astype(str)
+        
+        # Structure the final output list
+        time_trend_list = time_trend[[
+            'Time_Period_Label', 
+            'Unique_Variant_Count', 
+            'Total_Cases_Completed', 
+            'Variant_Complexity_Index'
+        ]].to_dict('records')
+        
+        # Apply rounding to the VCI
+        for item in time_trend_list:
+            item['Variant_Complexity_Index'] = round(item['Variant_Complexity_Index'], 4)
+
+        result = {
+            "Time_Aggregation_Level": time_period.upper(),
+            "Variant_Change_Trend": time_trend_list
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during VCI over time calculation: {e}"}, indent=4)
+    
+
+
+def calculate_cases_following_top_variant(
+    event_log_data,
+    case_id_col,
+    activity_col,
+    complete_time_col
+):
+    """
+    Calculates the percentage of all cases that followed the single most frequent 
+    process variant (the 'top' or 'happy' path).
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        required_cols = [case_id_col, activity_col, complete_time_col] 
+        if not all(col in df.columns for col in required_cols):
+             missing = [col for col in required_cols if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
+        
+        # 1. Sort events within each case by completion time to determine the correct sequence (trace)
+        df_sorted = df.sort_values(by=[case_id_col, complete_time_col])
+
+        # 2. Group by case ID and aggregate the activity column into an ordered list
+        case_traces = df_sorted.groupby(case_id_col)[activity_col].apply(list).reset_index()
+
+        # 3. Convert the activity list into a variant string (e.g., 'A -> B -> C')
+        case_traces['Variant'] = case_traces[activity_col].apply(lambda x: ' -> '.join(x))
+        
+        # 4. Count the frequency of each unique variant
+        variant_counts = case_traces['Variant'].value_counts()
+        
+        # 5. Extract metrics
+        total_cases = len(case_traces)
+        most_frequent_count = 0
+        most_frequent_variant = "N/A"
+        
+        if not variant_counts.empty:
+            most_frequent_count = int(variant_counts.iloc[0])
+            most_frequent_variant = variant_counts.index[0]
+        
+        # 6. Calculate the percentage of cases following the top variant
+        top_variant_percentage = (most_frequent_count / total_cases) * 100 if total_cases > 0 else 0.0
+
+        # 7. Format Output
+        result = {
+            "Total_Cases_Analyzed": int(total_cases),
+            "Top_Variant_Trace": most_frequent_variant,
+            "Top_Variant_Count": most_frequent_count,
+            "Cases_Following_Top_Variant_Percentage": round(top_variant_percentage, 2)
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during top variant conformance calculation: {e}"}, indent=4)
+
+
+
+def calculate_max_steps_in_a_case(event_log_data, case_id_col):
+    """
+    Calculates the maximum number of steps (events/activities) found in any single case.
+    This helps identify process outliers and highly complex cases.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        if case_id_col not in df.columns:
+             return json.dumps({"Error": f"Missing required column in data: {case_id_col}"}, indent=4)
+
+        # 1. Count steps (events) for each case
+        steps_per_case = df.groupby(case_id_col).size().rename('Steps_Count')
+        
+        if steps_per_case.empty:
+            return json.dumps({
+                "Max_Steps_Count": 0,
+                "Case_ID_With_Max_Steps": "N/A"
+            }, indent=4)
+
+        # 2. Find the maximum step count
+        max_steps = int(steps_per_case.max())
+        
+        # 3. Find the Case ID(s) corresponding to the maximum step count
+        case_id_with_max_steps = steps_per_case[steps_per_case == max_steps].index.tolist()
+
+        # 4. Format Output
+        result = {
+            "Max_Steps_Count": max_steps,
+            # Return only the first ID if multiple cases tie for the max
+            "Case_ID_With_Max_Steps": case_id_with_max_steps[0] if case_id_with_max_steps else "N/A",
+            "Cases_Tied_for_Max": len(case_id_with_max_steps)
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during max steps calculation: {e}"}, indent=4)
+
+
+def seconds_to_dhms(seconds):
+    """Converts a total number of seconds into a days, hours, minutes, seconds string."""
+    if seconds < 0:
+        sign = "-"
+        seconds = abs(seconds)
+    else:
+        sign = ""
+
+    days = math.floor(seconds / (3600 * 24))
+    seconds %= (3600 * 24)
+    hours = math.floor(seconds / 3600)
+    seconds %= 3600
+    minutes = math.floor(seconds / 60)
+    seconds %= 60
+    
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if seconds > 0 or not parts: # Include seconds if less than a minute, or if the time is 0
+        parts.append(f"{round(seconds, 2)}s")
+
+    return sign + " ".join(parts)
+
+
+
+def calculate_time_saved_potential(
+    event_log_data, 
+    case_id_col, 
+    start_time_col, 
+    complete_time_col
+):
+    """
+    Calculates the Average Time Saved Potential. This is the difference between 
+    the average case cycle time and the fastest (minimum) case cycle time.
+    
+    Potential Saved Time = Mean Cycle Time - Minimum Cycle Time (Fastest Case).
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+    
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        required_cols = [case_id_col, start_time_col, complete_time_col]
+        if not all(col in df.columns for col in required_cols):
+             missing = [col for col in required_cols if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        df[start_time_col] = pd.to_datetime(df[start_time_col], utc=True)
+        df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
+
+        # 1. Determine Case Boundaries (Start and End)
+        case_start = df.groupby(case_id_col)[start_time_col].min().rename('Case_Start')
+        case_end = df.groupby(case_id_col)[complete_time_col].max().rename('Case_End')
+        df_cycle_times = pd.merge(case_start, case_end, on=case_id_col).reset_index()
+
+        # 2. Calculate Cycle Time (Total Throughput Time) for Each Case in Seconds
+        df_cycle_times['Cycle_Time_Seconds'] = (
+            df_cycle_times['Case_End'] - df_cycle_times['Case_Start']
+        ).dt.total_seconds()
+        
+        if df_cycle_times.empty:
+            return json.dumps({"Error": "No valid cases found for cycle time calculation."}, indent=4)
+
+        # 3. Calculate Mean (T_avg) and Minimum (T_min) Cycle Times
+        mean_cycle_time_seconds = df_cycle_times['Cycle_Time_Seconds'].mean()
+        min_cycle_time_seconds = df_cycle_times['Cycle_Time_Seconds'].min()
+        total_cases = len(df_cycle_times)
+
+        # 4. Calculate Average Time Saved Potential
+        avg_time_saved_potential_seconds = max(0, mean_cycle_time_seconds - min_cycle_time_seconds)
+        
+        # 5. Calculate Total Time Saved Potential (Total Cases * Avg Potential)
+        total_time_saved_potential_seconds = avg_time_saved_potential_seconds * total_cases
+
+        # 6. Format Output
+        
+        result = {
+            "Total_Cases_Analyzed": int(total_cases),
+            
+            "Mean_Cycle_Time_Seconds": round(mean_cycle_time_seconds, 2),
+            "Mean_Cycle_Time_Formatted": seconds_to_dhms(mean_cycle_time_seconds),
+            
+            "Minimum_Cycle_Time_Seconds": round(min_cycle_time_seconds, 2),
+            "Minimum_Cycle_Time_Formatted": seconds_to_dhms(min_cycle_time_seconds),
+
+            "Average_Time_Saved_Potential_Seconds": round(avg_time_saved_potential_seconds, 2),
+            "Average_Time_Saved_Potential_Formatted": seconds_to_dhms(avg_time_saved_potential_seconds),
+            
+            "Total_Time_Saved_Potential_Hours": round(total_time_saved_potential_seconds / 3600, 2),
+            "Total_Time_Saved_Potential_Formatted": seconds_to_dhms(total_time_saved_potential_seconds),
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during time saved potential calculation: {e}"}, indent=4)
+
+
+
+
+def calculate_activity_frequency_distribution(event_log_data, activity_col):
+    """
+    Calculates the frequency distribution of activities in the event log.
+    Returns the absolute count and percentage for each activity, sorted by count.
+    
+    The output is structured for easy visualization (e.g., a horizontal bar chart).
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+    
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        if activity_col not in df.columns:
+             return json.dumps({"Error": f"Missing required column in data: {activity_col}"}, indent=4)
+
+        # 1. Calculate the raw counts for each activity
+        activity_counts = df[activity_col].value_counts()
+        total_events = activity_counts.sum()
+
+        if total_events == 0:
+            return json.dumps({"Distribution": []}, indent=4)
+
+        # 2. Create the distribution list
+        distribution = []
+        for activity, count in activity_counts.items():
+            percentage = (count / total_events) * 100
+            distribution.append({
+                "activity": activity,
+                "count": int(count),
+                "percentage": round(percentage, 2)
+            })
+
+        # The result is already sorted by value_counts() (descending count)
+        result = {
+            "Total_Events_Analyzed": int(total_events),
+            "Distribution": distribution
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during activity frequency calculation: {e}"}, indent=4)
