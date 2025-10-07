@@ -1444,3 +1444,508 @@ def calculate_activity_frequency_distribution(event_log_data, activity_col):
 
     except Exception as e:
         return json.dumps({"Error": f"An error occurred during activity frequency calculation: {e}"}, indent=4)
+    
+
+
+
+
+def calculate_happy_path_compliance(
+    event_log_data, 
+    case_id_col, 
+    activity_col, 
+    start_time_col, 
+    happy_path_data
+):
+    """
+    Calculates the Happy-Path Compliance Rate. This is the percentage of cases 
+    that exactly follow the specified happy path sequence of activities.
+
+    The happy_path_data parameter expects an iterable (list/QuerySet) of 
+    objects/dictionaries, and specifically handles the serialized dictionary format 
+    provided by the user.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+
+    # 1. Determine the list of happy path steps from the input structure
+    happy_path_list = None
+    
+    if isinstance(happy_path_data, dict) and 'happy_paths' in happy_path_data:
+        # Handles the internal test data format (dict wrapper)
+        happy_path_list = happy_path_data['happy_paths']
+    elif hasattr(happy_path_data, '__iter__') and not isinstance(happy_path_data, str):
+        # Handles a direct list/QuerySet (e.g., the format provided by the user)
+        happy_path_list = list(happy_path_data)
+    
+    if not happy_path_list:
+        return json.dumps({"Error": "Happy path definition is missing or empty."}, indent=4)
+
+    # 2. Sort the steps by 'serial_number' and extract the activity sequence
+    try:
+        # Sort the list using dictionary key access for 'serial_number'
+        happy_path_list.sort(key=lambda item: item.get('serial_number', -1))
+        
+        target_path = []
+        for item in happy_path_list:
+            # Use .get() for safe dictionary key access, expecting 'activity_name'
+            activity = item.get('activity_name')
+            if activity is None:
+                return json.dumps({"Error": "Happy path step is missing the 'activity_name' field."}, indent=4)
+            target_path.append(activity)
+
+        target_path_tuple = tuple(target_path)
+        
+    except Exception as e:
+        # This catches errors if the list items aren't dictionaries or lack required keys
+        return json.dumps({"Error": f"Failed to sort and extract happy path steps. Check data format: {e}"}, indent=4)
+
+    if not target_path_tuple:
+        return json.dumps({"Error": "Target happy path is empty after extraction."}, indent=4)
+
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        required_cols = [case_id_col, activity_col, start_time_col]
+        if not all(col in df.columns for col in required_cols):
+             missing = [col for col in required_cols if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        # 3. Prepare Data and sort events within cases by start time
+        df[start_time_col] = pd.to_datetime(df[start_time_col], utc=True)
+        # Sort by case ID and then by start time to guarantee the correct activity sequence
+        df_sorted = df.sort_values(by=[case_id_col, start_time_col])
+
+        # 4. Aggregate activity sequence (variant) for each case
+        def get_case_sequence(group):
+            return tuple(group[activity_col].tolist())
+
+        # FIX: Added include_groups=False to resolve the FutureWarning
+        case_sequences = df_sorted.groupby(case_id_col).apply(get_case_sequence, include_groups=False)
+        
+        total_cases = len(case_sequences)
+        if total_cases == 0:
+             return json.dumps({"Total_Cases_Analyzed": 0, "Compliance_Rate_Percentage": 0.0}, indent=4)
+
+        # 5. Compare Paths and Count Compliance
+        compliant_cases_count = 0
+        for sequence in case_sequences:
+            if sequence == target_path_tuple:
+                compliant_cases_count += 1
+        
+        # 6. Calculate Metrics
+        non_compliant_cases_count = total_cases - compliant_cases_count
+        compliance_rate = (compliant_cases_count / total_cases) * 100
+        non_compliance_rate = 100.0 - compliance_rate
+
+        # 7. Format Output
+        result = {
+            "Total_Cases_Analyzed": int(total_cases),
+            "Happy_Path_Definition": target_path,
+            
+            "Compliant_Cases_Count": int(compliant_cases_count),
+            "Compliance_Rate_Percentage": round(compliance_rate, 2),
+            
+            "Non_Compliant_Cases_Count": int(non_compliant_cases_count),
+            "Non_Compliance_Rate_Percentage": round(non_compliance_rate, 2),
+            
+            # Structure for Pie Chart visualization:
+            "Pie_Chart_Data": [
+                {"label": "Compliant", "value": round(compliance_rate, 2), "count": int(compliant_cases_count)},
+                {"label": "Non-Compliant", "value": round(non_compliance_rate, 2), "count": int(non_compliant_cases_count)}
+            ]
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during happy path compliance calculation: {e}"}, indent=4)
+
+
+
+
+def calculate_total_completed_cases(event_log_data, case_id_col):
+    """
+    Calculates the total number of unique completed process instances (cases)
+    in the event log. This is suitable for a KPI card metric.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+    
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        if case_id_col not in df.columns:
+             return json.dumps({"Error": f"Missing required column in data: {case_id_col}"}, indent=4)
+
+        # Count the number of unique case IDs
+        total_cases = df[case_id_col].nunique()
+
+        # Format Output for a KPI card
+        result = {
+            "KPI_Name": "Total Completed Cases",
+            "Value": int(total_cases)
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during case count calculation: {e}"}, indent=4)
+    
+
+
+def calculate_happy_path_deviation(
+    event_log_data, 
+    case_id_col, 
+    activity_col, 
+    start_time_col,
+    complete_time_col, 
+    happy_path_data
+):
+    """
+    Calculates the average deviation (in steps and time) of non-compliant cases
+    from the defined Happy Path.
+    
+    Time deviation benchmark: Minimum cycle time of compliant cases.
+    Step deviation benchmark: Happy Path length.
+    
+    Also provides data for a bar chart showing activities causing deviation.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+
+    # 1. Determine the list of happy path steps and required length
+    happy_path_list = None
+    if isinstance(happy_path_data, dict) and 'happy_paths' in happy_path_data:
+        happy_path_list = happy_path_data['happy_paths']
+    elif hasattr(happy_path_data, '__iter__') and not isinstance(happy_path_data, str):
+        happy_path_list = list(happy_path_data)
+    
+    if not happy_path_list:
+        return json.dumps({"Error": "Happy path definition is missing or empty."}, indent=4)
+
+    try:
+        happy_path_list.sort(key=lambda item: item.get('serial_number', -1))
+        target_path = [item.get('activity_name') for item in happy_path_list if item.get('activity_name')]
+        target_path_tuple = tuple(target_path)
+        happy_path_length = len(target_path_tuple)
+        
+    except Exception as e:
+        return json.dumps({"Error": f"Failed to extract happy path steps: {e}"}, indent=4)
+
+    if happy_path_length == 0:
+        return json.dumps({"Error": "Target happy path is empty after extraction."}, indent=4)
+
+    try:
+        df = pd.DataFrame(event_log_data)
+        required_cols = [case_id_col, activity_col, start_time_col, complete_time_col]
+        if not all(col in df.columns for col in required_cols):
+             missing = [col for col in required_cols if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        # 2. Prepare Data (Timestamps and Sorting)
+        df[start_time_col] = pd.to_datetime(df[start_time_col], utc=True)
+        df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
+        df_sorted = df.sort_values(by=[case_id_col, start_time_col])
+
+        # 3. Calculate Cycle Times for All Cases
+        case_start = df_sorted.groupby(case_id_col)[start_time_col].min().rename('Case_Start')
+        case_end = df_sorted.groupby(case_id_col)[complete_time_col].max().rename('Case_End')
+        df_cycle_times = pd.merge(case_start, case_end, on=case_id_col).reset_index()
+        df_cycle_times['Cycle_Time_Seconds'] = (
+            df_cycle_times['Case_End'] - df_cycle_times['Case_Start']
+        ).dt.total_seconds()
+
+        # 4. Aggregate Case Sequence and Steps Count
+        case_metrics = df_sorted.groupby(case_id_col).agg(
+            sequence=(activity_col, lambda x: tuple(x.tolist())),
+            steps_count=(case_id_col, 'size') # Calculate step count
+        ).reset_index()
+
+        # 5. Merge all metrics
+        df_metrics = pd.merge(case_metrics, df_cycle_times[[case_id_col, 'Cycle_Time_Seconds']], on=case_id_col)
+        
+        # 6. Identify Compliance
+        df_metrics['Is_Compliant'] = df_metrics['sequence'] == target_path_tuple
+        
+        # 7. Determine Benchmark Time (T_min_HP)
+        compliant_times = df_metrics[df_metrics['Is_Compliant']]['Cycle_Time_Seconds']
+        if not compliant_times.empty:
+            # Benchmark: Fastest time of a compliant case
+            t_min_hp = compliant_times.min() 
+        else:
+            # Fallback: use overall minimum cycle time if no compliant cases exist
+            t_min_hp = df_metrics['Cycle_Time_Seconds'].min() if not df_metrics.empty else 0
+
+        # 8. Filter for Non-Compliant Cases and Calculate Deviation
+        df_non_compliant = df_metrics[~df_metrics['Is_Compliant']].copy()
+        
+        total_non_compliant_cases = len(df_non_compliant)
+
+        if total_non_compliant_cases == 0:
+            return json.dumps({
+                "Total_Cases_Analyzed": len(df_metrics),
+                "Average_Step_Deviation": 0.0,
+                "Average_Time_Deviation_Seconds": 0.0,
+                "Average_Time_Deviation_Formatted": "0s",
+                "Deviation_Activity_Distribution": []
+            }, indent=4)
+
+        # Step Deviation: (Case Steps - Happy Path Steps)
+        df_non_compliant['Step_Deviation'] = df_non_compliant['steps_count'] - happy_path_length
+        
+        # Time Deviation: (Case Cycle Time - Benchmark Time)
+        df_non_compliant['Time_Deviation_Seconds'] = df_non_compliant['Cycle_Time_Seconds'] - t_min_hp
+
+        # Calculate Averages (Only for Non-Compliant Cases)
+        avg_step_deviation = df_non_compliant['Step_Deviation'].mean()
+        avg_time_deviation_seconds = df_non_compliant['Time_Deviation_Seconds'].mean()
+
+        # 9. Calculate Activity Deviation Distribution (for Bar Chart)
+        happy_path_activities = set(target_path_tuple)
+        
+        # Get all activity events from ONLY non-compliant cases
+        df_non_compliant_events = df[df[case_id_col].isin(df_non_compliant[case_id_col])]
+        
+        # Filter for activities in non-compliant cases that are NOT part of the Happy Path
+        # This identifies the *extra* activities causing deviation
+        non_hp_activities = df_non_compliant_events[~df_non_compliant_events[activity_col].isin(happy_path_activities)]
+        
+        # Calculate frequency of these deviating activities (Top 10)
+        activity_deviation_counts = non_hp_activities[activity_col].value_counts().nlargest(10)
+
+        activity_deviation_chart = [
+            {"activity": act, "deviation_count": int(count)}
+            for act, count in activity_deviation_counts.items()
+        ]
+        
+        # 10. Format Final Output
+        result = {
+            "Total_Cases_Analyzed": len(df_metrics),
+            "Non_Compliant_Cases_Count": total_non_compliant_cases,
+            "Happy_Path_Length": happy_path_length,
+            
+            "Average_Step_Deviation": round(avg_step_deviation, 2),
+            "Benchmark_Cycle_Time_Seconds": round(t_min_hp, 2),
+            
+            "Average_Time_Deviation_Seconds": round(avg_time_deviation_seconds, 2),
+            "Average_Time_Deviation_Formatted": seconds_to_dhms(avg_time_deviation_seconds),
+
+            # Data structure for the bar chart visualization
+            "Deviation_Activity_Distribution": activity_deviation_chart
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during happy path deviation calculation: {e}"}, indent=4)
+    
+
+
+
+
+def calculate_skipped_steps_rate(
+    event_log_data, 
+    case_id_col, 
+    activity_col, 
+    happy_path_data
+):
+    """
+    Calculates the percentage of cases that skipped at least one required activity
+    defined in the Happy Path.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+
+    # 1. Extract the set of mandatory Happy Path activities
+    happy_path_list = None
+    if isinstance(happy_path_data, dict) and 'happy_paths' in happy_path_data:
+        happy_path_list = happy_path_data['happy_paths']
+    elif hasattr(happy_path_data, '__iter__') and not isinstance(happy_path_data, str):
+        happy_path_list = list(happy_path_data)
+    
+    if not happy_path_list:
+        return json.dumps({"Error": "Happy path definition is missing or empty."}, indent=4)
+
+    try:
+        # Get the unique set of mandatory activities required in the process
+        mandatory_activities = {
+            item.get('activity_name') 
+            for item in happy_path_list 
+            if item.get('activity_name')
+        }
+        
+    except Exception as e:
+        return json.dumps({"Error": f"Failed to extract mandatory activities: {e}"}, indent=4)
+
+    if not mandatory_activities:
+        return json.dumps({"Error": "Mandatory Happy Path activities set is empty."}, indent=4)
+
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        if case_id_col not in df.columns or activity_col not in df.columns:
+             missing = [col for col in [case_id_col, activity_col] if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        # 2. Group by case and get the set of unique activities performed in each case
+        case_activities = df.groupby(case_id_col)[activity_col].apply(set)
+        
+        total_cases = len(case_activities)
+        if total_cases == 0:
+             return json.dumps({"Total_Cases_Analyzed": 0, "Skipped_Steps_Rate_Percentage": 0.0}, indent=4)
+
+        skipped_cases_count = 0
+        skipped_activity_counts = {}
+        
+        # 3. Check each case for skipped steps
+        for case_id, actual_activities in case_activities.items():
+            # Missing activities are the ones in mandatory set but not in actual set
+            missing_activities = mandatory_activities - actual_activities
+            
+            if missing_activities:
+                skipped_cases_count += 1
+                # Tally the specific activities that were skipped
+                for activity in missing_activities:
+                    skipped_activity_counts[activity] = skipped_activity_counts.get(activity, 0) + 1
+        
+        # 4. Calculate Rate
+        skipped_steps_rate = (skipped_cases_count / total_cases) * 100
+        
+        # 5. Prepare Bar Chart Data (Top 10 skipped activities)
+        skipped_activity_chart = sorted(
+            [{"activity": act, "skipped_count": count} for act, count in skipped_activity_counts.items()],
+            key=lambda x: x['skipped_count'],
+            reverse=True
+        )[:10]
+
+        # 6. Format Output
+        result = {
+            "Total_Cases_Analyzed": int(total_cases),
+            "Mandatory_Activities_Set": list(mandatory_activities),
+            
+            "Skipped_Cases_Count": int(skipped_cases_count),
+            "Skipped_Steps_Rate_Percentage": round(skipped_steps_rate, 2),
+            
+            # Data structure for the bar chart visualization
+            "Skipped_Activity_Distribution": skipped_activity_chart
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during skipped steps rate calculation: {e}"}, indent=4)
+
+
+
+
+
+
+def calculate_case_throughput_rate(
+    event_log_data, 
+    case_id_col, 
+    complete_time_col, # This variable receives 'columns.timestamp_end'
+    period='D' # 'D' for Day, 'W' for Week, 'M' for Month
+):
+    """
+    Calculates the Case Throughput Rate (number of completed cases per time unit)
+    and provides data for line chart visualization.
+    """
+    if not event_log_data:
+        return json.dumps({"Error": "Event log data is empty."}, indent=4)
+    
+    if period not in ['D', 'W', 'M']:
+        return json.dumps({"Error": "Period must be 'D' (Day), 'W' (Week), or 'M' (Month)."}, indent=4)
+
+    try:
+        df = pd.DataFrame(event_log_data)
+        
+        required_cols = [case_id_col, complete_time_col]
+        if not all(col in df.columns for col in required_cols):
+             missing = [col for col in required_cols if col not in df.columns]
+             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
+
+        # 1. Use the passed parameter 'complete_time_col' to read the original timestamp data
+        df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
+
+        # 2. Identify Case Completion Time (latest event time per case)
+        df_case_completion = (
+            df.groupby(case_id_col)[complete_time_col]
+            .max()
+            .reset_index(name='Case_End') 
+        )
+        
+        total_cases = len(df_case_completion)
+        if total_cases == 0:
+            return json.dumps({"Total_Cases_Completed": 0, "Throughput_Rate_Per_Period": 0.0}, indent=4)
+
+        # 3. Handle Period Mapping and Date Formatting
+        pd_resample_period = period
+        date_format = "%Y-%m-%d"
+        period_unit_text = "day"
+
+        if period == 'W':
+            # Use 'W' for resampling, setting the period unit for output
+            period_unit_text = "week"
+            date_format = "%Y-W%W"
+        elif period == 'M':
+            # Use 'ME' (Month End) to avoid FutureWarnings and the non-fixed frequency error
+            pd_resample_period = 'ME'
+            period_unit_text = "month"
+            date_format = "%Y-%m" # Format as YYYY-MM
+            
+        # Calculate Total Process Duration based on period units
+        min_completion_date = df_case_completion['Case_End'].min().date()
+        max_completion_date = df_case_completion['Case_End'].max().date()
+        total_days_span = (max_completion_date - min_completion_date).days + 1
+
+        if period == 'W':
+            total_time_units = max(1, math.ceil(total_days_span / 7))
+        elif period == 'M':
+            start_month = min_completion_date.year * 12 + min_completion_date.month
+            end_month = max_completion_date.year * 12 + max_completion_date.month
+            total_time_units = max(1, end_month - start_month + 1)
+        else: # 'D'
+            total_time_units = total_days_span
+            
+        # 4. Calculate Overall KPI Rate
+        throughput_rate = total_cases / total_time_units if total_time_units > 0 else 0.0
+
+        # 5. Prepare Line Chart Data (Cases Completed over time)
+        
+        # Set Case_End as index for temporal resampling. 
+        df_case_completion = df_case_completion.set_index('Case_End')
+
+        # Resample and count cases per period, using the mapped period (e.g., 'ME')
+        cases_per_period = df_case_completion.resample(pd_resample_period)[case_id_col].count().rename('Cases_Completed')
+        
+        line_chart_data = []
+        for timestamp, count in cases_per_period.items():
+            if period == 'W':
+                 # W-MON is used to get the start of the week for plotting consistency
+                 formatted_period = timestamp.to_period('W-MON').start_time.strftime(date_format)
+            else:
+                 # For 'D' or 'ME', the timestamp is already a clean point in time (start of day or end of month)
+                 # We simply format the index timestamp.
+                 formatted_period = timestamp.strftime(date_format)
+                 
+            line_chart_data.append({
+                "period": formatted_period,
+                "count": int(count)
+            })
+
+        # 6. Format Output
+        
+        result = {
+            "Total_Cases_Completed": int(total_cases),
+            
+            "Throughput_Rate_Per_Period": round(throughput_rate, 2),
+            "Rate_Period_Unit": period_unit_text,
+            
+            # Data structure for Line Chart visualization
+            "Throughput_Distribution": line_chart_data
+        }
+        
+        return json.dumps(result, indent=4)
+
+    except Exception as e:
+        return json.dumps({"Error": f"An error occurred during throughput rate calculation: {e}"}, indent=4)

@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from rest_framework import viewsets, permissions
 from django.contrib.auth.models import User
-from .models import Department, Team, Project, DefineColumns, IdealPath
+from .models import Department, Team, Project, DefineColumns, HappyPath
 
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -12,7 +12,7 @@ from .serializers import (
     TeamSerializer,
     ProjectSerializer,
     DefineColumnsSerializer,
-    IdealPathSerializer,
+    HappyPathSerializer,
 )
 from .utils import *
 
@@ -113,15 +113,14 @@ def happy_path(request, pk=None):
     if request.method == 'GET':
         try:
             project = Project.objects.get(id=pk)
-            ideal_paths = project.idealpath_set.all().order_by('serial_number')
+            ideal_paths = project.happypath_set.all().order_by('serial_number')
             
             # Serialize the data
-            serializer = IdealPathSerializer(ideal_paths, many=True)
+            serializer = HappyPathSerializer(ideal_paths, many=True)
             
             return Response({
-                "project_id": project.id,
-                "project_name": project.name,  # Assuming Project model has a 'name' field
-                "ideal_paths": serializer.data
+                "project_id": project.id,                
+                "happy_paths": serializer.data
             })
         except Project.DoesNotExist:
             return Response({"error": "No project found with this ID."}, status=404)
@@ -131,7 +130,7 @@ def happy_path(request, pk=None):
     elif request.method == 'POST':
         try:
             # Use serializer to validate and save data
-            serializer = IdealPathSerializer(data=request.data)
+            serializer = HappyPathSerializer(data=request.data)
             
             if serializer.is_valid():
                 ideal_path = serializer.save()
@@ -872,6 +871,197 @@ def time_saved_potential(request, pk=None):
             columns.case_id, 
             columns.timestamp_start, 
             columns.timestamp_end
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+    
+
+@api_view(['GET'])
+def happy_path_compliance(request, pk=None):
+    try:
+        
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        happy_path = project.happypath_set.all().order_by('serial_number')
+        serializer = HappyPathSerializer(happy_path, many=True)        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_happy_path_compliance(
+            event_log_data, 
+            columns.case_id, 
+            columns.activity, 
+            columns.timestamp_start, 
+            serializer.data
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+    
+
+
+@api_view(['GET'])
+def total_completed_cases(request, pk=None):
+    try:
+        
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+                
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_total_completed_cases(event_log_data, columns.case_id)
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+    
+
+
+@api_view(['GET'])
+def happy_path_deviation(request, pk=None):
+    try:
+        
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        happy_path = project.happypath_set.all().order_by('serial_number')
+        serializer = HappyPathSerializer(happy_path, many=True)        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_happy_path_deviation(
+            event_log_data, 
+            columns.case_id, 
+            columns.activity, 
+            columns.timestamp_start,
+            columns.timestamp_end, 
+            serializer.data
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+
+
+
+
+@api_view(['GET'])
+def skipped_steps_rate(request, pk=None):
+    try:
+        
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)
+        happy_path = project.happypath_set.all().order_by('serial_number')
+        serializer = HappyPathSerializer(happy_path, many=True)        
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_skipped_steps_rate(
+            event_log_data, 
+            columns.case_id, 
+            columns.activity, 
+            serializer.data
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:
+        # Return a clean error message
+        return Response({"error": str(e)}, status=500)
+    
+
+
+
+@api_view(['GET'])
+def case_throughput_rate(request, pk=None):
+    try:
+        time_param = request.query_params.get('time', None)
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)             
+        # 1. Load the CSV file from the path
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # 2. Extract the required data as a list of dictionaries (records)
+        event_log_data = df_log.to_dict('records')
+
+        # 3. Calculate the total cases (returns a JSON string)
+        result = calculate_case_throughput_rate(
+            event_log_data, 
+            columns.case_id, 
+            columns.timestamp_end,
+            period=time_param.upper() # 'D' for Day, 'W' for Week, 'M' for Month
         )
         result_data = json.loads(result)
         

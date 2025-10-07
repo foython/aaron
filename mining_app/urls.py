@@ -35,4 +35,9 @@ urlpatterns = [
     path('max-steps-in-a-case/<int:pk>/', views.max_steps_in_a_case, name='max_steps_in_a_case'),
     path('time-saved-potential/<int:pk>/', views.time_saved_potential, name='time_saved_potential'),
     path('activity-frequency-distribution/<int:pk>/', views.activity_frequency_distribution, name='activity_frequency_distribution'),
+    path('happy-path-compliance/<int:pk>/', views.happy_path_compliance, name='happy_path_compliance'),
+    path('total-completed-cases/<int:pk>/', views.total_completed_cases, name='total_completed_cases'),
+    path('happy-path-deviation/<int:pk>/', views.happy_path_deviation, name='happy_path_deviation'),
+    path('skipped-steps-rate/<int:pk>/', views.skipped_steps_rate, name='skipped_steps_rate'),
+    path('case-throughput-rate/<int:pk>/', views.case_throughput_rate, name='case_throughput_rate'),
 ]

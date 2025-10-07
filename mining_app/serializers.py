@@ -1,6 +1,5 @@
 from rest_framework import serializers
-from .models import Department, Team, Project, DefineColumns, IdealPath
-
+from .models import Department, Team, Project, DefineColumns, HappyPath
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
@@ -43,7 +42,7 @@ class DefineColumnsSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_at', 'updated_at']
 
 
-class IdealPathSerializer(serializers.ModelSerializer):
+class HappyPathSerializer(serializers.ModelSerializer):
     class Meta:
-        model = IdealPath
+        model = HappyPath
         fields = '__all__'

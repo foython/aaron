@@ -52,16 +52,16 @@ class DefineColumns(TimeStamp):
     
 
 
-class HappyPath(TimeStamp):
-    project = models.ForeignKey(Project, on_delete=models.CASCADE)
-    path = models.TextField()
+# class HappyPath(TimeStamp):
+#     project = models.ForeignKey(Project, on_delete=models.CASCADE)
+#     path = models.TextField()
 
-    def __str__(self):
-        return f"Actual Path for {self.project.process}"
+#     def __str__(self):
+#         return f"Actual Path for {self.project.process}"
     
 
 
-class IdealPath(models.Model):
+class HappyPath(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE)     
     serial_number = models.IntegerField()
     activity_name = models.CharField(max_length=100)   
