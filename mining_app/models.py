@@ -72,3 +72,33 @@ class HappyPath(models.Model):
 
     def __str__(self):
         return f"Step {self.serial_number}: {self.activity_name} ({self.average_time_minutes} min)"
+    
+
+class Visualization(TimeStamp):
+    # This model is correct.
+    type = models.CharField(max_length=128)
+
+    def __str__(self):
+        return self.type
+
+
+class kpiList(TimeStamp):
+    kpi_name = models.CharField(max_length=128)
+    
+    visualizations = models.ManyToManyField(
+        Visualization,
+        blank=True  
+    )
+
+    def __str__(self):
+        return self.kpi_name
+    
+
+class kpiDashboard(TimeStamp):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE)
+    name = models.CharField(max_length=128)
+    data = models.JSONField()
+
+    def __str__(self):
+        return f"KPI {self.name}"

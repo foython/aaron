@@ -9,4 +9,5 @@ urlpatterns = [
     path('api/accounts/', include('accounts.urls')),   
     path('api/landing_page/', include('landing_page.urls')),
     path('api/project/', include('mining_app.urls')),
+    path('api/subscription/', include('subscription.urls')),
 ]+static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

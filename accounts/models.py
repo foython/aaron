@@ -32,6 +32,8 @@ class CustomUser(AbstractUser, TimeStamp):
     auth_provider = models.CharField(max_length=20, default="normal")
     is_varified = models.BooleanField(default=False)
     otp = models.CharField(max_length=6, blank=True, null=True) 
+    processes = models.IntegerField(default=0)
+    chatbot_inquiries = models.IntegerField(default=0)
     is_subscribed = models.BooleanField(default=False)
     subsciption_expires_on = models.DateTimeField(blank=True, null=True)
     subscription_status = models.CharField(max_length=100, blank=True,)

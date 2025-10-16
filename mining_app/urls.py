@@ -40,4 +40,8 @@ urlpatterns = [
     path('happy-path-deviation/<int:pk>/', views.happy_path_deviation, name='happy_path_deviation'),
     path('skipped-steps-rate/<int:pk>/', views.skipped_steps_rate, name='skipped_steps_rate'),
     path('case-throughput-rate/<int:pk>/', views.case_throughput_rate, name='case_throughput_rate'),
+    path('actual-path-data-with-connections/<int:pk>/', views.actual_path_data_with_connections, name='actual_path_data_with_connections'),
+    path('kpi-list/', views.kpi_list_view, name='kpi_list_view'),
+    path('dashboard/<int:project_id>/', views.kpi_dashboard, name='kpi_dashboard'),
+    path('dashboard/', views.kpi_dashboard, name='save_dashboard'),
 ]

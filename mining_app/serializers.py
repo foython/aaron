@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Department, Team, Project, DefineColumns, HappyPath
+from .models import Department, Team, Project, DefineColumns, HappyPath, kpiList, Visualization, kpiDashboard
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
@@ -46,3 +46,37 @@ class HappyPathSerializer(serializers.ModelSerializer):
     class Meta:
         model = HappyPath
         fields = '__all__'
+
+
+class VisualizationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Visualization
+        fields = ['name']
+
+
+class KpiListSerializer(serializers.ModelSerializer):   
+    visualizations = serializers.SerializerMethodField()
+
+    class Meta:
+        model = kpiList
+        fields = [
+            "id", "kpi_name", "visualizations"
+        ]
+
+    def get_visualizations(self, obj):       
+        return list(obj.visualizations.all().values_list('type', flat=True))
+    
+
+
+class KpiDashboardSerializer(serializers.ModelSerializer):      
+    
+    class Meta:
+        model = kpiDashboard       
+        fields = [
+            'id',             
+            'user',               
+            'project',                
+            'name', 
+            'data'
+        ]       
+        read_only_fields = ['user'] 
