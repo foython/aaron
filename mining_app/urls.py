@@ -12,6 +12,8 @@ router.register(r'define-columns', views.DefineColumnsViewSet, basename='define-
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('project-view/', views.project_api_view, name='project_view'),
+    path('project-view/<int:pk>/', views.project_api_view, name='project_view'),
     path('columns/<int:pk>/', views.get_columns, name='get-columns'),
     path('happy-path/<int:pk>/', views.happy_path, name='ideal-path'),
     path('happy-path/', views.happy_path, name='ideal-path-create'),
@@ -40,8 +42,11 @@ urlpatterns = [
     path('happy-path-deviation/<int:pk>/', views.happy_path_deviation, name='happy_path_deviation'),
     path('skipped-steps-rate/<int:pk>/', views.skipped_steps_rate, name='skipped_steps_rate'),
     path('case-throughput-rate/<int:pk>/', views.case_throughput_rate, name='case_throughput_rate'),
-    path('actual-path-data-with-connections/<int:pk>/', views.actual_path_data_with_connections, name='actual_path_data_with_connections'),
+    path('actual-path-data-with-connections/<int:pk>/', views.actual_path_data_with, name='actual_path_data_with_connections'),
     path('kpi-list/', views.kpi_list_view, name='kpi_list_view'),
-    path('dashboard/<int:project_id>/', views.kpi_dashboard, name='kpi_dashboard'),
+    path('dashboard/<int:project_id>/<int:pk>/', views.kpi_dashboard, name='kpi_dashboard'),
+    path('dashboard/<int:project_id>/', views.kpi_dashboard, name='kpi_dashboard'),     
     path('dashboard/', views.kpi_dashboard, name='save_dashboard'),
+    path('actual-path-data-problems/<int:pk>/', views.actual_path_data_with_problems, name='actual_path_data_with_connections'),
+    path('banchmarking-view/', views.banchmarking_view, name='banchmarking_view'),
 ]

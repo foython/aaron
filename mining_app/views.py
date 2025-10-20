@@ -107,11 +107,130 @@ def get_columns(request, pk=None):
     
 
     
-# @api_view(['GET', 'POST', 'PATCH', 'DELETE'])
-# @permission_classes([IsAuthenticated])
-# def project_view(request):
+@api_view(['GET', 'POST', 'PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def project_api_view(request, pk=None):
+    
+    if request.method == 'GET':
+        if pk is not None:
+            # DETAIL VIEW: Retrieve a single project
+            try:
+                # Retrieve the project, ensuring it belongs to the requesting user
+                project = Project.objects.get(pk=pk, user=request.user)
+                serializer = ProjectSerializer(project)
+                return Response(serializer.data)
+            except Project.DoesNotExist:
+                return Response(
+                    {"detail": "Project not found or you do not have permission to view it."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        else:
+            # LIST VIEW: Retrieve all projects for the authenticated user
+            projects = Project.objects.filter(user=request.user).order_by('-created_at')
+            serializer = ProjectSerializer(projects, many=True)
+            return Response(serializer.data)
 
-#     return render(request, 'mining_app/project.html')
+    # --- CREATE (POST) ---
+    elif request.method == 'POST':
+       
+        data = request.data        
+        related_project_id = data.get('related_project')
+
+        if related_project_id:
+            related_data = data.pop('related_project', None) # <--- This line is problematic if 'related_project' is defined on the serializer
+            serializer = ProjectSerializer(data=request.data)   
+            if serializer.is_valid():              
+                new_project = serializer.save(user=request.user, is_related=True) # Save the new project
+                
+                # Update the parent project's 'related_project' field
+                try:
+                    parent_project = Project.objects.get(
+                        pk=related_project_id,
+                        user=request.user
+                    ) 
+                    
+                    parent_project.related_project = new_project
+                    parent_project.save()
+                   
+                    
+                    return Response(serializer.data, status=status.HTTP_201_CREATED) # <--- ADDED RETURN HERE
+                    
+                except Project.DoesNotExist:
+                    # Handle case where the specified related_project doesn't exist for the user
+                    return Response(
+                        {"related_project": "The specified related project was not found or does not belong to you."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST) # <--- ADDED RETURN HERE
+        
+        # ... (existing code for when related_project_id is NOT present)
+        else:
+            serializer = ProjectSerializer(data=request.data)
+            if serializer.is_valid():
+                serializer.save(user=request.user)
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+            # You should also add a return for invalid data here
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST) # <--- ADDED RETURN HERE
+
+    
+    # --- UPDATE (PATCH) ---
+    elif request.method == 'PATCH':
+        if pk is None:
+            return Response(
+                {"detail": "Method not allowed. PATCH requires a primary key (pk)."},
+                status=status.HTTP_405_METHOD_NOT_ALLOWED
+            )
+
+        try:
+            # Retrieve the project, ensuring it belongs to the requesting user
+            project = Project.objects.get(pk=pk, user=request.user)
+        except Project.DoesNotExist:
+            return Response(
+                {"detail": "Project not found or you do not have permission to edit it."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Use partial=True for PATCH to allow only a subset of fields
+        serializer = ProjectSerializer(
+            project,
+            data=request.data,
+            partial=True
+        )
+
+        if serializer.is_valid():
+            # Note: The user field is read_only, so attempting to change it will be ignored by DRF.
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # --- DELETE ---
+    elif request.method == 'DELETE':
+        if pk is None:
+            return Response(
+                {"detail": "Method not allowed. DELETE requires a primary key (pk)."},
+                status=status.HTTP_405_METHOD_NOT_ALLOWED
+            )
+
+        try:
+            # Retrieve the project, ensuring it belongs to the requesting user
+            project = Project.objects.get(pk=pk, user=request.user)
+            project.delete()
+            return Response(
+                {"detail": "Project deleted successfully."},
+                status=status.HTTP_204_NO_CONTENT
+            )
+        except Project.DoesNotExist:
+            return Response(
+                {"detail": "Project not found or you do not have permission to delete it."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    return Response(
+        {"detail": "Method not allowed."},
+        status=status.HTTP_405_METHOD_NOT_ALLOWED
+    )
+
 
 
 
@@ -173,9 +292,7 @@ def get_ideal_paths(request, pk=None):
         return Response({"error": "No project found with this ID."}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
-    
-
-    
+        
 
 
 
@@ -992,44 +1109,127 @@ def kpi_list_view(request):
     except Exception as e:
         return Response({"error": str(e)}, status=500)
     
+    
+@api_view(['GET', 'POST', 'PATCH', 'DELETE']) # <-- Updated to include PATCH and DELETE
+def kpi_dashboard(request, project_id=None, pk=None): 
+        
+    if not request.user.is_authenticated:
+        return Response(
+            {"detail": "Authentication credentials were not provided or recognized."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
-
-@api_view(['GET', 'POST'])
-def kpi_dashboard(request, project_id=None):     
     if request.method == 'GET':        
-        if request.user.is_authenticated:            
-            dashboards = kpiDashboard.objects.filter(user=request.user)
+        dashboards = kpiDashboard.objects.filter(user=request.user)
 
-            if project_id:              
-                dashboards = dashboards.filter(project_id=project_id)            
-            
-            dashboards = dashboards.select_related('user', 'project')
-            
-            serializer = KpiDashboardSerializer(dashboards, many=True)
-            return Response(serializer.data)
-        else:
-            return Response(
-                {"detail": "Authentication credentials were not provided or recognized."},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+        if project_id:           
+            dashboards = dashboards.filter(project_id=project_id)        
+              
+        dashboards = dashboards.select_related('user', 'project')
+        
+        serializer = KpiDashboardSerializer(dashboards, many=True)
+        return Response(serializer.data)
 
 
     elif request.method == 'POST':
+        data = request.data.copy()
         
-        serializer = KpiDashboardSerializer(data=request.data)
         
-        if serializer.is_valid():
+        if project_id and 'project' not in data:
+            data['project'] = project_id 
             
-            if request.user.is_authenticated:                
-                serializer.save(user=request.user) 
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
-            else:
-                return Response(
-                    {"detail": "Authentication credentials were not provided or recognized."},
-                    status=status.HTTP_401_UNAUTHORIZED
-                )
-
+        serializer = KpiDashboardSerializer(data=data)
+        
+        if serializer.is_valid():           
+            serializer.save(user=request.user) 
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+    elif request.method == 'PATCH':
+        if pk is None:
+            return Response(
+                {"detail": "Method not allowed. PATCH requires a dashboard ID (pk)."},
+                status=status.HTTP_405_METHOD_NOT_ALLOWED
+            )
+
+        try:
+            instance = kpiDashboard.objects.get(pk=pk, user=request.user)
+        except kpiDashboard.DoesNotExist:
+            return Response(
+                {"detail": "Dashboard not found or access denied."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        serializer = KpiDashboardSerializer(instance, data=request.data, partial=True)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+            
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+    elif request.method == 'DELETE':
+        if pk is None:
+            return Response(
+                {"detail": "Method not allowed. DELETE requires a dashboard ID (pk)."},
+                status=status.HTTP_405_METHOD_NOT_ALLOWED
+            )
+      
+        try:
+            instance = kpiDashboard.objects.get(pk=pk, user=request.user)
+        except kpiDashboard.DoesNotExist:
+            return Response(
+                {"detail": "Dashboard not found or access denied."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    return Response(
+        {"detail": "Method not allowed."},
+        status=status.HTTP_405_METHOD_NOT_ALLOWED
+    )
+
+# @api_view(['GET', 'POST'])
+# def kpi_dashboard(request, project_id=None):     
+#     if request.method == 'GET':        
+#         if request.user.is_authenticated:            
+#             dashboards = kpiDashboard.objects.filter(user=request.user)
+
+#             if project_id:              
+#                 dashboards = dashboards.filter(project_id=project_id)            
+            
+#             dashboards = dashboards.select_related('user', 'project')
+            
+#             serializer = KpiDashboardSerializer(dashboards, many=True)
+#             return Response(serializer.data)
+#         else:
+#             return Response(
+#                 {"detail": "Authentication credentials were not provided or recognized."},
+#                 status=status.HTTP_401_UNAUTHORIZED
+#             )
+
+
+#     elif request.method == 'POST':
+        
+#         serializer = KpiDashboardSerializer(data=request.data)
+        
+#         if serializer.is_valid():
+            
+#             if request.user.is_authenticated:                
+#                 serializer.save(user=request.user) 
+#                 return Response(serializer.data, status=status.HTTP_201_CREATED)
+#             else:
+#                 return Response(
+#                     {"detail": "Authentication credentials were not provided or recognized."},
+#                     status=status.HTTP_401_UNAUTHORIZED
+#                 )
+
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 
 
@@ -1077,3 +1277,130 @@ def actual_path_data_with_connections(request, pk=None):
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:       
         return Response({"error": str(e)}, status=500)
+    
+
+
+@api_view(['GET'])
+def actual_path_data_with(request, pk=None):
+    try:
+        time_param = request.query_params.get('time', None)
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)           
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+  
+        event_log_data = df_log.to_dict('records')
+ 
+        result = analyze_and_structure_process_datas(
+            event_log_data, 
+            columns.case_id, 
+            columns.activity,
+            columns.timestamp_start,
+            columns.timestamp_end
+            
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:       
+        return Response({"error": str(e)}, status=500)
+    
+
+@api_view(['GET'])
+def actual_path_data_with_problems(request, pk=None):
+    try:
+        time_param = request.query_params.get('time', None)
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)           
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+  
+        event_log_data = df_log.to_dict('records')
+ 
+        result = analyze_path_kpi_benchmarks(
+            event_log_data, 
+            columns.case_id, 
+            columns.activity,
+            columns.timestamp_start,
+            columns.timestamp_end
+            
+        )
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:       
+        return Response({"error": str(e)}, status=500)
+    
+
+
+@api_view(['GET'])
+def banchmarking_view(request):   
+    projects = Project.objects.filter(user=request.user)
+    
+    serializer = ProjectSerializer(projects, many=True)
+    serialized_data = serializer.data
+    
+    filtered_and_shaped_data = []
+    
+    for project_data in serialized_data:
+        
+        if project_data.get('is_related') == False:
+            
+            shaped_project = {
+                'id': project_data.get('id'),
+                'process': project_data.get('process'),
+                'date': project_data.get('created_at'), # Assuming 'created_at' is the desired date
+                'csv_file': project_data.get('csv_file'),
+                'related_project': project_data.get('related_project'),
+            }
+            filtered_and_shaped_data.append(shaped_project)
+   
+    return Response(filtered_and_shaped_data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def banchmark_report(request, pk=None):
+    try:
+        
+        project = Project.objects.get(pk=pk) 
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        project = Project.objects.get(pk=pk)
+        compair = Project.objects.get(pk=project.related_project__id)
+
+
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        event_log_data = df_log.to_dict('records')
+
+       
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:        
+        return Response({"error": str(e)}, status=500)
+
+

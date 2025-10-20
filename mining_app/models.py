@@ -33,6 +33,14 @@ class Project(TimeStamp):
     team = models.ForeignKey(Team, on_delete=models.CASCADE)
     csv_file = models.FileField(upload_to='csv_files/')
     status = models.BooleanField(default=False)
+    related_project = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sub_projects'
+    )
+    is_related = models.BooleanField(default=False)
 
     def __str__(self):
         return self.process
@@ -97,8 +105,8 @@ class kpiList(TimeStamp):
 class kpiDashboard(TimeStamp):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
-    name = models.CharField(max_length=128)
-    data = models.JSONField()
+    name = models.CharField(max_length=128, blank=True, null=True)
+    data = models.JSONField(blank=True, null=True)
 
     def __str__(self):
         return f"KPI {self.name}"
