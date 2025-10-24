@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Department, Team, Project, DefineColumns, HappyPath, kpiList, Visualization, kpiDashboard
+from .models import Department, Team, Project, DefineColumns, HappyPath, kpiList, Visualization, kpiDashboard, ProcessVariant
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
@@ -80,3 +80,23 @@ class KpiDashboardSerializer(serializers.ModelSerializer):
             'data'
         ]       
         read_only_fields = ['user'] 
+
+
+
+class ProcessVariantSerializer(serializers.ModelSerializer):
+    project_name = serializers.CharField(source='project.name', read_only=True)
+
+    class Meta:
+        model = ProcessVariant
+        fields = [
+            'id',
+            'project',
+            'project_name',
+            'variant_path',
+            'case_count',
+            'frequency_pct',
+            'median_cycle_time_hours',
+            'created_at',
+            'updated_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at']

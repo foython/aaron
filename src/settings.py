@@ -158,8 +158,8 @@ SIMPLE_JWT = {
 CORS_ALLOW_ALL_ORIGINS = True
 
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:7006",
-    "http://10.10.13.30:7006",
+    "http://localhost:8000",
+    "http://10.10.13.92:8000",
     "https://key-humpback-scarcely.ngrok-free.app",
     
 ]

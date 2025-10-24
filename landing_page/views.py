@@ -4,7 +4,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from .models import TotalCompanies, Testimonial, FAQ
 from .serializers import TotalCompaniesSerializer, TestimonialSerializer, FAQSerializer
-from .ai import chat_simple
+from .ai import get_chatbot_response
 from datetime import datetime
 from rest_framework import status
 import json
@@ -42,7 +42,7 @@ def chatbot_for_website(request):
     if not message:
         return Response({"error": "Message is required"}, status=status.HTTP_400_BAD_REQUEST)    
    
-    bot_response = chat_simple(
+    bot_response = get_chatbot_response(
         message, 
         # prev_context=conversation_history # Renamed argument to match function def
     )    

@@ -43,7 +43,7 @@ class Project(TimeStamp):
     is_related = models.BooleanField(default=False)
 
     def __str__(self):
-        return self.process
+        return f'{self.id} {self.process}'
 
 
 
@@ -110,3 +110,29 @@ class kpiDashboard(TimeStamp):
 
     def __str__(self):
         return f"KPI {self.name}"
+    
+
+
+class ProcessVariant(TimeStamp):    
+    project = models.ForeignKey(
+        Project, 
+        on_delete=models.CASCADE, 
+        related_name='process_variants',
+        verbose_name="Related Project"
+    )
+    
+    variant_path = models.TextField(verbose_name="Process Variant Path")    
+    case_count = models.IntegerField(verbose_name="Case Count")
+    frequency_pct = models.FloatField(verbose_name="Frequency (%)")    
+    median_cycle_time_hours = models.FloatField(
+        null=True, 
+        blank=True, 
+        verbose_name="Median Cycle Time (Hours)"
+    )
+
+    class Meta:        
+        unique_together = ('project', 'variant_path')       
+        ordering = ['-case_count']
+
+    def __str__(self):
+        return f"{self.variant_path[:50]}... ({self.case_count} cases)"

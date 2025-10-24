@@ -11,15 +11,16 @@ router.register(r'define-columns', views.DefineColumnsViewSet, basename='define-
 
 
 urlpatterns = [
-    path('', include(router.urls)),
+    path('', include(router.urls)),    
     path('project-view/', views.project_api_view, name='project_view'),
     path('project-view/<int:pk>/', views.project_api_view, name='project_view'),
     path('columns/<int:pk>/', views.get_columns, name='get-columns'),
+    path('process-variants/<int:pk>/', views.get_process_variants_view, name='get-process-variants'),    
     path('happy-path/<int:pk>/', views.happy_path, name='ideal-path'),
     path('happy-path/', views.happy_path, name='ideal-path-create'),
     path('ideal-path/<int:pk>/', views.get_ideal_paths, name='get-ideal-paths'),
-    path('cycle-time/<int:pk>/', views.get_cycle_time, name='get-ideal-paths'),
-    path('average-vs-median-by-month/<int:pk>/', views.average_vs_median_by_month, name='get-average-vs-median'),
+    path('cycle-time/<int:pk>/', views.filtered_cycle_time, name='filtered_cycle_time'),
+    path('average-vs-median-by-time/<int:pk>/', views.time_series_cycle_time_metrics, name='get-average-vs-median'),
     path('total-case-count/<int:pk>/', views.total_case_count, name='total-case-count'),
     path('total-idle-time-&-ratio/<int:pk>/', views.total_idle_time, name='total-idle-time'),
     path('total-loops-&-ratio/<int:pk>/', views.loops_and_ratio, name='loops_and_ratio'),
@@ -49,4 +50,8 @@ urlpatterns = [
     path('dashboard/', views.kpi_dashboard, name='save_dashboard'),
     path('actual-path-data-problems/<int:pk>/', views.actual_path_data_with_problems, name='actual_path_data_with_connections'),
     path('banchmarking-view/', views.banchmarking_view, name='banchmarking_view'),
+    path('cycle-filter/<int:pk>/', views.time_series_cycle_time_metrics, name='cycle_filter'),
+    path('kpi-summary-metrics/<int:pk>/', views.kpi_summary_metrics, name='cycle_filter'),
+    path('process-variants/<int:pk>/', views.process_variants, name='process_variants'),
 ]
+

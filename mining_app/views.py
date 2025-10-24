@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from rest_framework import viewsets, permissions
 from django.contrib.auth.models import User
-from .models import Department, Team, Project, DefineColumns, HappyPath, kpiList, kpiDashboard
+from .models import Department, Team, Project, DefineColumns, HappyPath, kpiList, kpiDashboard, ProcessVariant
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -14,7 +14,8 @@ from .serializers import (
     DefineColumnsSerializer,
     HappyPathSerializer,
     KpiListSerializer,
-    KpiDashboardSerializer
+    KpiDashboardSerializer,
+    ProcessVariantSerializer
 
 )
 from .utils import *
@@ -22,7 +23,8 @@ import pandas as pd
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 import json
-
+from .fil import *
+# from .filter import filter_event_log_pre_kpi
 
 
 class DepartmentViewSet(viewsets.ModelViewSet):
@@ -56,7 +58,7 @@ class TeamViewSet(viewsets.ModelViewSet):
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
-  
+
     queryset = Project.objects.all().order_by('-created_at')
     serializer_class = ProjectSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -80,13 +82,58 @@ class DefineColumnsViewSet(viewsets.ModelViewSet):
         return self.queryset.filter(project__user=self.request.user)
     
 
-    def perform_create(self, serializer):
-        
-        define_columns_instance = serializer.save()        
-        
+    def perform_create(self, serializer):        
+        define_columns_instance = serializer.save()               
         project = define_columns_instance.project
         project.status = True  
         project.save()
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        data = calculate_variants_and_metrics(
+            df_log.to_dict(orient="records"),
+            define_columns_instance.case_id,
+            define_columns_instance.activity,
+            define_columns_instance.timestamp_start
+        )
+
+        
+        save_process_variants(project, data)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def get_process_variants_view(request, pk):
+    """
+    GET endpoint to retrieve all saved process variants for a specific project.
+    No recalculation is done.
+    """
+    try:
+        # 1️⃣ Ensure project belongs to current user
+        project = Project.objects.get(pk=pk, user=request.user)
+
+        # 2️⃣ Fetch related process variants
+        variants = ProcessVariant.objects.filter(project=project).order_by('-case_count')
+
+        # 3️⃣ Serialize and return
+        serializer = ProcessVariantSerializer(variants, many=True)
+
+        return Response({
+            "project_id": project.id,
+            "total_variants": len(serializer.data),
+            "variants": serializer.data
+        }, status=status.HTTP_200_OK)
+
+    except Project.DoesNotExist:
+        return Response(
+            {"error": "Project not found or not owned by user."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        return Response(
+            {"error": f"An unexpected error occurred: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 @api_view(['GET'])
@@ -276,7 +323,9 @@ def happy_path(request, pk=None):
         except Exception as e:
             return Response({"error": str(e)}, status=500)
         
+
 import json
+
         
 @api_view(['GET'])
 def get_ideal_paths(request, pk=None):
@@ -295,186 +344,445 @@ def get_ideal_paths(request, pk=None):
         
 
 
-
 @api_view(['GET'])
-def get_cycle_time(request, pk=None):
+def filtered_cycle_time(request, pk=None):
     try:
+        # --- 1. Extract Filters from Query Parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        
+        # New: Get selected variant IDs (e.g., from a comma-separated string like '6,7,8')
+        selected_variant_ids = request.query_params.getlist('variants')
+        
+        # Convert cycle time filters to float if they exist
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+
+        # --- 2. Project and Permissions Check + Variant Path Lookup ---
         project = Project.objects.get(pk=pk) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
-        columns = DefineColumns.objects.get(project=project)
-        
+        # Look up column definitions and data file
+        columns = DefineColumns.objects.get(project=project)           
         file_path = project.csv_file.path
         df_log = pd.read_csv(file_path)
-       
-        event_log_data = df_log.to_dict('records')
+
+        # ⭐️ New Logic: Convert Variant IDs to Variant Paths ⭐️
         
-        result_json_string = calculate_all_cycle_time_metrics_from_model(
-                event_log_data,
-                columns.case_id,
-                columns.timestamp_start,
-                columns.timestamp_end, # Ensure this is the correct column name for completion time
-                office_start_hour=6, # Assuming you have these fields on Project model
-                office_end_hour=18,     # Assuming you have these fields on Project model
-                time_unit='hours'
+        selected_variant_paths = None
+        if selected_variant_ids: # Check if the list is not empty
+            # Convert list of strings ['7', '6'] to list of integers [7, 6]
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            
+            # Query the database for the corresponding variant_path strings
+            variant_objects = ProcessVariant.objects.filter(
+                id__in=variant_ids, # This correctly handles multiple IDs
+                project=project
             )
+            # Extract the actual variant_path strings
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            
+            if not selected_variant_paths:
+                # If IDs were requested but none were found/valid, pass an empty list
+                selected_variant_paths = []
         
-        result_data = json.loads(result_json_string)
+        # --- 3. Filter the Event Log ---
+        # Pass the extracted parameters and the variant paths to the filtering function
+        log_data = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # This is usually the column containing the variant path
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths, # 👈 Using the retrieved paths here
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
+        )
         
-        return Response({
-            "cycle_time_data": result_data
-        })
+        # --- 4. Calculate KPIs on the Filtered Log ---
+        event_log_data = log_data.to_dict('records')
+        
+        result = calculate_all_cycle_time_metrics(
+            event_log_data,
+            columns.case_id,
+            columns.timestamp_start,
+            columns.timestamp_end,
+            office_start_hour=6,
+            office_end_hour=18,
+            time_unit='hours',
+        )
+        
+        result_data = json.loads(result)
+        
+        return Response(result_data) 
+
+    except Project.DoesNotExist:
+        return Response({"error": "Project matching query does not exist."}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown" 
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
-    except Exception as e:
+    except Exception as e:       
         return Response({"error": str(e)}, status=500)
     
 
-
-    
 @api_view(['GET'])
-def average_vs_median_by_month(request, pk=None):
-    project = Project.objects.get(pk=pk) 
-    if project.user != request.user:
-        return Response({"error": "You do not have permission to access this project."}, status=403)
-        
-    columns = DefineColumns.objects.get(project=project)
-    CASE_ID_COL = columns.case_id
-    START_TIME_COL = columns.timestamp_start
-    COMPLETE_TIME_COL = columns.timestamp_end  # Ensure this is the correct column name for completion   
-    file_path = project.csv_file.path
-    df_log = pd.read_csv(file_path)
-    
-    PROJECT_START_HOUR = 6
-    PROJECT_END_HOUR = 18 
-
-    print(f"--- Running Monthly Cycle Time Calculation on {file_path} with {PROJECT_START_HOUR}:00-{PROJECT_END_HOUR}:00 Business Hours ---")
-    
+def time_series_cycle_time_metrics(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        aggregation_level = request.query_params.get('aggregation_level', 'month') 
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+        
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+        
+        columns = DefineColumns.objects.get(project=project)           
+        file_path = project.csv_file.path
+        
+        # 3. Load Data & Variant Path Lookup
         df_log = pd.read_csv(file_path)
 
-        required_cols = [CASE_ID_COL, START_TIME_COL, COMPLETE_TIME_COL]
-        if not all(col in df_log.columns for col in required_cols):
-            missing = [col for col in required_cols if col not in df_log.columns]
-            return Response({
-            json.dumps({"Error": f"Required columns missing: {missing}"}, indent=4)
-        })
-            
-        else:       
-            data_to_pass = df_log.to_dict('records')
-        
-            results_json = create_monthly_cycle_time_data(
-                event_log_data=data_to_pass,
-                case_id_col=CASE_ID_COL,
-                start_time_col=START_TIME_COL,
-                complete_time_col=COMPLETE_TIME_COL,
-                office_start_hour=PROJECT_START_HOUR,
-                office_end_hour=PROJECT_END_HOUR
-            )
-            
-            result_data = json.loads(results_json)
-        
-        return Response({
-            "cycle_time_data": result_data
-        })
-    except FileNotFoundError:
-        print(json.dumps({"Error": f"File not found: {file_path}. Please ensure it is in the same directory."}, indent=4))
-    except Exception as e:
-        print(json.dumps({"Error": f"A critical error occurred during local file processing: {e}"}, indent=4))
+        # ⭐️ Variant Path Lookup (from previous successful implementation) ⭐️
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            if not selected_variant_paths:
+                selected_variant_paths = [] # Ensure an empty list if lookup fails
 
+        # ⭐️ 4. FILTER THE EVENT LOG ⭐️
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Assumed to be the activity column for path calculation
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths,
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
+        )
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            return Response({"error": "Filtering resulted in an empty event log. Please check your filter criteria."}, status=200)
+
+        # 5. Call the time series calculation function on the FILTERED data
+        event_log_data = df_filtered.to_dict('records')
+
+        result_json_string = get_cycle_time_over_period(
+            event_log_data,
+            columns.case_id,
+            start_time_col=columns.timestamp_start,
+            complete_time_col=columns.timestamp_end,
+            office_start_hour=6,
+            office_end_hour=18,
+            aggregation_level=aggregation_level,
+            # NOTE: We no longer pass start/end_date_filter here, 
+            # as the data is already filtered by date.
+        )
+        
+        # 6. Parse and Return Response
+        result_data = json.loads(result_json_string)
+        
+        return Response(result_data) 
+
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        # Define file_path for error reporting if it failed earlier
+        file_path = "Unknown" 
+        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+    except Exception as e:       
+        return Response({"error": str(e)}, status=500)
 
 
 @api_view(['GET'])
 def total_case_count(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-    
         file_path = project.csv_file.path
+        
+        # 3. Load Data & Variant Path Lookup
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
+        # ⭐️ Variant Path Lookup ⭐️
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            if not selected_variant_paths:
+                selected_variant_paths = []
 
-        case_count_json_string = calculate_total_cases(event_log_data, columns.case_id)
+        # ⭐️ 4. FILTER THE EVENT LOG ⭐️
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Used for path calculation
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths,
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
+        )
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            # Return 0 case count gracefully
+            return Response({"total_cases": 0, "error": "Filtering resulted in zero cases."}, status=200)
 
+        # 5. Calculate the total cases on the FILTERED data
+        # NOTE: If calculate_total_cases expects a list of dicts, convert the filtered DataFrame
+        event_log_data = df_filtered.to_dict('records')
+        
+        # Since the data is already filtered, we don't pass the date filters again.
+        case_count_json_string = calculate_total_cases(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            start_time_col=columns.timestamp_start,      
+            complete_time_col=columns.timestamp_end,     
+            # start_date_filter and end_date_filter are NOT needed here
+        )
+        
+        # 6. Parse and Return Response
         result_data = json.loads(case_count_json_string)
-
+        
         return Response(result_data) 
         
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown"
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
-    
-
 
 
 
 @api_view(['GET'])
 def total_idle_time(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-
         file_path = project.csv_file.path
+        
+        # 3. Load Data & Variant Path Lookup
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
+        # ⭐️ Variant Path Lookup ⭐️
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            
+            if not selected_variant_paths:
+                selected_variant_paths = []
 
-        idle_time = calculate_total_idle_time_metrics(event_log_data=event_log_data,
-                case_id_col=columns.case_id,
-                start_time_col=columns.timestamp_start,
-                complete_time_col=columns.timestamp_end,
-                office_start_hour=6,
-                office_end_hour=18)
-        result_data = json.loads(idle_time)
+        # ⭐️ 4. FILTER THE EVENT LOG ⭐️
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Used for path calculation
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths,
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
+        )
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            # Return 0 idle time gracefully
+            return Response({"total_idle_time": 0.0, "error": "Filtering resulted in zero cases."}, status=200)
+
+        # 5. Calculate total idle time on the FILTERED data
+        # NOTE: The idle time function relies on the office hours defined here
+        event_log_data = df_filtered.to_dict('records')
+
+        idle_time_json_string = calculate_total_idle_time_metrics(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            start_time_col=columns.timestamp_start,
+            complete_time_col=columns.timestamp_end,
+            office_start_hour=6,
+            office_end_hour=18
+        )
+        
+        # 6. Parse and Return Response
+        result_data = json.loads(idle_time_json_string)
         
         return Response(result_data) 
 
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown"
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+    
 
 
 @api_view(['GET'])
 def loops_and_ratio(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-
         file_path = project.csv_file.path
+        
+        # 3. Load Data & Variant Path Lookup
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
+        # ⭐️ Variant Path Lookup ⭐️
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            if not selected_variant_paths:
+                selected_variant_paths = []
 
-        total_loops_ratio = calculate_loop_metrics(event_log_data=event_log_data,
-                case_id_col=columns.case_id,
-                activity_col=columns.activity
+        # ⭐️ 4. FILTER THE EVENT LOG ⭐️
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Used for path calculation
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths,
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
         )
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            # Return 0 loops/ratios gracefully
+            return Response({"total_loops": 0, "looping_case_ratio": 0.0, "error": "Filtering resulted in zero cases."}, status=200)
+
+        # 5. Calculate loop metrics on the FILTERED data
+        event_log_data = df_filtered.to_dict('records')
+
+        total_loops_ratio = calculate_loop_metrics(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity # Pass the activity column (used as the variant_col in filter)
+        )
+        
+        # 6. Parse and Return Response
         result_data = json.loads(total_loops_ratio)
         
         return Response(result_data) 
 
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown"
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e: 
         return Response({"error": str(e)}, status=500)
@@ -483,31 +791,89 @@ def loops_and_ratio(request, pk=None):
 
 @api_view(['GET'])
 def bottleneck_and_ratio(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-
         file_path = project.csv_file.path
+        
+        # 3. Load Data & Variant Path Lookup
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
+        # ⭐️ Variant Path Lookup ⭐️
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            if not selected_variant_paths:
+                selected_variant_paths = []
 
-        result = calculate_bottleneck_metrics(event_log_data=event_log_data,
-                case_id_col=columns.case_id,
-                activity_col=columns.activity,
-                start_time_col=columns.timestamp_start,
-                complete_time_col=columns.timestamp_end
+        # ⭐️ 4. FILTER THE EVENT LOG ⭐️
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Used for path calculation
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths,
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
         )
-        result_data = json.loads(result)
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            # Return placeholder values for bottleneck metrics gracefully
+            return Response({
+                "bottleneck_activity": "N/A", 
+                "bottleneck_duration_sum": 0.0,
+                "error": "Filtering resulted in zero cases."
+            }, status=200)
+
+        # 5. Calculate bottleneck metrics on the FILTERED data
+        event_log_data = df_filtered.to_dict('records')
+
+        result_json_string = calculate_bottleneck_metrics(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity,
+            start_time_col=columns.timestamp_start,
+            complete_time_col=columns.timestamp_end
+        )
+        
+        # 6. Parse and Return Response
+        result_data = json.loads(result_json_string)
         
         return Response(result_data) 
 
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown"
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
@@ -516,87 +882,269 @@ def bottleneck_and_ratio(request, pk=None):
 
 @api_view(['GET'])
 def cal_step_and_cases(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-
         file_path = project.csv_file.path
+        
+        # 3. Load Data & Variant Path Lookup
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
+        # ⭐️ Variant Path Lookup ⭐️
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            if not selected_variant_paths:
+                selected_variant_paths = []
 
-        result = calculate_steps_per_case_metrics(event_log_data, columns.case_id)
-        result_data = json.loads(result)
+        # ⭐️ 4. FILTER THE EVENT LOG ⭐️
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Used for path calculation
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths,
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
+        )
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            # Return placeholder values (0 steps, 0 cases) gracefully
+            return Response({
+                "avg_steps_per_case": 0.0, 
+                "total_cases_analyzed": 0,
+                "total_steps": 0,
+                "error": "Filtering resulted in zero cases."
+            }, status=200)
+
+        # 5. Calculate steps per case metrics on the FILTERED data
+        event_log_data = df_filtered.to_dict('records')
+
+        result_json_string = calculate_steps_per_case_metrics(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id
+        )
+        
+        # 6. Parse and Return Response
+        result_data = json.loads(result_json_string)
         
         return Response(result_data) 
 
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown"
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:  
         return Response({"error": str(e)}, status=500)
-    
 
 
 @api_view(['GET'])
 def dropout_rate(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-
         file_path = project.csv_file.path
+        
+        # 3. Load Data & Variant Path Lookup
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
+        # ⭐️ Variant Path Lookup ⭐️
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            if not selected_variant_paths:
+                selected_variant_paths = []
 
-      
-        result = calculate_dropout_rate(event_log_data, columns.case_id, columns.activity, columns.timestamp_end)
-        result_data = json.loads(result)
+        # ⭐️ 4. FILTER THE EVENT LOG ⭐️
+        # Note: We need the start timestamp for date filtering, even if the dropout function doesn't explicitly use it.
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Used for path calculation
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths,
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
+        )
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            # Return 0 dropout rate gracefully
+            return Response({
+                "dropout_rate": 0.0, 
+                "completed_cases": 0,
+                "total_cases_analyzed": 0,
+                "error": "Filtering resulted in zero cases."
+            }, status=200)
+
+        # 5. Calculate dropout rate on the FILTERED data
+        event_log_data = df_filtered.to_dict('records')
+
+        result_json_string = calculate_dropout_rate(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity,
+            complete_time_col=columns.timestamp_end
+        )
+        
+        # 6. Parse and Return Response
+        result_data = json.loads(result_json_string)
         
         return Response(result_data) 
 
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown"
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
     
+
 
 
 @api_view(['GET'])
 def average_activity_time(request, pk=None):
+    project_id = pk
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+
+        # --- 2. Setup and Load Data ---
+        project = Project.objects.get(pk=pk)
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-
         file_path = project.csv_file.path
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
+        # ⭐️ Variant Path Lookup (Crucial step for variants filter) ⭐️
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            if not selected_variant_paths:
+                selected_variant_paths = []
+        
+        # --- 3. Apply ALL Filters using the standard function ---
+        filtered_df_log = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity,
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths,
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
+        )
+        
+        # Check for empty log after filtering
+        if filtered_df_log.empty:
+            # Return an empty list or appropriate placeholder gracefully
+            return Response({
+                "error": "Filtering resulted in zero events.", 
+                "average_activity_durations": []
+            }, status=200)
 
-        result = calculate_average_activity_duration(event_log_data, columns.activity,columns.timestamp_start, columns.timestamp_end)
+
+        # --- 4. Calculation ---
+        event_log_data = filtered_df_log.to_dict('records')
+
+        result = calculate_average_activity_duration(
+            event_log_data=event_log_data, 
+            activity_col=columns.activity, 
+            start_time_col=columns.timestamp_start, 
+            complete_time_col=columns.timestamp_end
+        )
+        
         result_data = json.loads(result)
         
         return Response(result_data) 
 
+    except Project.DoesNotExist:
+        error_msg = f"Project not found for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
-        return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
+        return Response({"error": "CSV file not found."}, status=404) 
     except Exception as e:
-        return Response({"error": str(e)}, status=500)
-    
+        # NOTE: Print statement is good for debugging, but we remove it for the final response structure
+        return Response({"error": f"An internal server error occurred: {str(e)}"}, status=500)
+
 
 
 @api_view(['GET'])
@@ -629,35 +1177,80 @@ def process_variants(request, pk=None):
 
 
 
-
 @api_view(['GET'])
 def top_variants(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # NOTE: We intentionally skip the 'variants' lookup and filter logic 
+        # because the goal is to CALCULATE the top variants.
+
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-
         file_path = project.csv_file.path
+        
+        # 3. Load Data
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
-
-        result = calculate_top_variants(
-            event_log_data,
-            columns.case_id,
-            columns.activity,
-            columns.timestamp_end,
-            top_n=5 
+        # ⭐️ 4. FILTER THE EVENT LOG (Date and Cycle Time Only) ⭐️
+        # We pass selected_variants=None to skip the variant filtering step 
+        # in the filter_event_log_pre_kpi function.
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Still needed for path calculation inside the filter function
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=None, # IMPORTANT: Skip variant filtering
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
         )
-        result_data = json.loads(result)
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            # Return an empty list gracefully
+            return Response({"top_variants": [], "error": "Filtering resulted in zero cases."}, status=200)
+
+        # 5. Calculate top variants on the FILTERED data
+        event_log_data = df_filtered.to_dict('records')
+
+        result_json_string = calculate_top_variants(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity, # Used for path calculation within calculate_top_variants
+            complete_time_col=columns.timestamp_end, # Assuming this is used for case completion time
+            top_n=10 
+        )
+        
+        # 6. Parse and Return Response
+        result_data = json.loads(result_json_string)
         
         return Response(result_data) 
 
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown"
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
@@ -666,99 +1259,267 @@ def top_variants(request, pk=None):
 
 @api_view(['GET'])
 def first_pass_rate(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-
         file_path = project.csv_file.path
+        
+        # 3. Load Data & Variant Path Lookup
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
+        # ⭐️ Variant Path Lookup ⭐️
+        # We perform the lookup to allow filtering if the user applies it
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            if not selected_variant_paths:
+                selected_variant_paths = []
 
-        result = calculate_first_pass_rate(
-            event_log_data,
-            columns.case_id,
-            columns.activity
+        # ⭐️ 4. FILTER THE EVENT LOG ⭐️
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Used for path calculation
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths, # Applies the variant filter if present
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
         )
-        result_data = json.loads(result)
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            # Return 0.0 first pass rate gracefully
+            return Response({
+                "first_pass_rate": 0.0, 
+                "total_cases_analyzed": 0,
+                "error": "Filtering resulted in zero cases."
+            }, status=200)
+
+        # 5. Calculate first pass rate on the FILTERED data
+        event_log_data = df_filtered.to_dict('records')
+
+        result_json_string = calculate_first_pass_rate(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity
+        )
+        
+        # 6. Parse and Return Response
+        result_data = json.loads(result_json_string)
         
         return Response(result_data) 
 
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown"
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:
-
         return Response({"error": str(e)}, status=500)
-    
 
 
 @api_view(['GET'])
 def longest_waiting_time(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-
         file_path = project.csv_file.path
+        
+        # 3. Load Data & Variant Path Lookup
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
+        # ⭐️ Variant Path Lookup ⭐️
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            if not selected_variant_paths:
+                selected_variant_paths = []
 
-        result = calculate_longest_waiting_time_step(
-            event_log_data,
-            columns.case_id,
-            columns.activity,
-            columns.timestamp_start,
-            columns.timestamp_end
+        # ⭐️ 4. FILTER THE EVENT LOG ⭐️
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Used for path calculation
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths, # Applies the variant filter if present
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
         )
-        result_data = json.loads(result)
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            # Return placeholder values gracefully
+            return Response({
+                "longest_waiting_activity": "N/A", 
+                "max_waiting_time": 0.0,
+                "error": "Filtering resulted in zero cases."
+            }, status=200)
+
+        # 5. Calculate longest waiting time on the FILTERED data
+        event_log_data = df_filtered.to_dict('records')
+
+        result_json_string = calculate_longest_waiting_time_step(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity,
+            start_time_col=columns.timestamp_start,
+            complete_time_col=columns.timestamp_end
+        )
+        
+        # 6. Parse and Return Response
+        result_data = json.loads(result_json_string)
         
         return Response(result_data) 
 
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown"
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:
-
         return Response({"error": str(e)}, status=500)
 
 
 
 @api_view(['GET'])
 def variant_complexity_index(request, pk=None):
+    project_id = pk # Capture the ID for error logging
     try:
-        project = Project.objects.get(pk=pk) 
+        # --- 1. Extract ALL query parameters ---
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        # Filters for the inner-case cycle time (if provided)
+        min_cycle_time_str = request.query_params.get('min_cycle_time', None)
+        max_cycle_time_str = request.query_params.get('max_cycle_time', None)
+        min_cycle_time = float(min_cycle_time_str) if min_cycle_time_str else None
+        max_cycle_time = float(max_cycle_time_str) if max_cycle_time_str else None
+        
+        # Variant Filters (using getlist for multiple selections)
+        selected_variant_ids = request.query_params.getlist('variants')
+
+        # 2. Fetch Project and Column Definitions
+        project = Project.objects.get(pk=project_id) 
+        
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
         columns = DefineColumns.objects.get(project=project)
-
         file_path = project.csv_file.path
+        
+        # 3. Load Data & Variant Path Lookup
         df_log = pd.read_csv(file_path)
 
-        event_log_data = df_log.to_dict('records')
+        # ⭐️ Variant Path Lookup ⭐️
+        selected_variant_paths = None
+        if selected_variant_ids: 
+            variant_ids = [int(id) for id in selected_variant_ids if id.isdigit()]
+            variant_objects = ProcessVariant.objects.filter(id__in=variant_ids, project=project)
+            selected_variant_paths = list(variant_objects.values_list('variant_path', flat=True))
+            if not selected_variant_paths:
+                selected_variant_paths = []
 
-        result = calculate_variant_complexity_index(
-            event_log_data,
-            columns.case_id,
-            columns.activity,
-            columns.timestamp_end
+        # ⭐️ 4. FILTER THE EVENT LOG ⭐️
+        df_filtered = filter_event_log_pre_kpi(
+            df=df_log,
+            case_id_col=columns.case_id,
+            variant_col=columns.activity, # Used for path calculation
+            timestamp_start_col=columns.timestamp_start,
+            timestamp_complete_col=columns.timestamp_end, 
+            start_date=start_date,
+            end_date=end_date,
+            selected_variants=selected_variant_paths, # Applies the variant filter if present
+            min_cycle_time=min_cycle_time,
+            max_cycle_time=max_cycle_time,
+            time_unit="hours"
         )
-        result_data = json.loads(result)
+        
+        # Check if filtering resulted in an empty log
+        if df_filtered.empty:
+            # Return 0.0 complexity gracefully
+            return Response({
+                "complexity_index": 0.0,
+                "error": "Filtering resulted in zero cases."
+            }, status=200)
+
+        # 5. Calculate complexity index on the FILTERED data
+        event_log_data = df_filtered.to_dict('records')
+
+        result_json_string = calculate_variant_complexity_index(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity,
+            complete_time_col=columns.timestamp_end
+        )
+        
+        # 6. Parse and Return Response
+        result_data = json.loads(result_json_string)
         
         return Response(result_data) 
 
+    except Project.DoesNotExist:
+        error_msg = f"Project matching query does not exist for ID: {project_id}."
+        return Response({"error": error_msg}, status=404)
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
+        file_path = "Unknown"
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
@@ -1374,24 +2135,134 @@ def banchmarking_view(request):
     return Response(filtered_and_shaped_data, status=status.HTTP_200_OK)
 
 
+
+from .fil import *
+from .ai import generate_complete_kpi_package_openai
+
 @api_view(['GET'])
-def banchmark_report(request, pk=None):
+def kpi_summary_metrics(request, pk=None):
+    project_id = pk
+    response_data = {}
+
     try:
-        
+        # 1️⃣ Fetch Current Project
+        project = Project.objects.get(pk=project_id)
+
+        # Check permission
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+
+        # 2️⃣ Get column definitions
+        columns = DefineColumns.objects.get(project=project)
+
+        # 3️⃣ Read CSV file and calculate KPIs
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+
+        # --- Calculate all KPI metrics for current project ---
+        current_kpi_json = generate_project_report(
+            df=df_log,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity,
+            start_col=columns.timestamp_start,
+            end_col=columns.timestamp_end,
+        )
+
+        # 4️⃣ Project metadata
+        project_metadata = {
+            "project_id": project.pk,
+            "process_name": project.process,
+            "department": getattr(project.department, "name", "N/A"),
+            "team": getattr(project.team, "name", "N/A"),
+        }
+
+        response_data["Current_Project_Data"] = {
+            "Metadata": project_metadata,
+            "KPIs": json.loads(current_kpi_json),
+        }
+
+        # 5️⃣ Check Related Project
+        response_data["Related_Project_Data"] = None
+
+        if project.related_project:
+            related_project = project.related_project
+            related_project_id = related_project.pk
+
+            try:
+                related_columns = DefineColumns.objects.get(project=related_project)
+                related_df = pd.read_csv(related_project.csv_file.path)
+
+                related_kpi_json = generate_project_report(
+                    df=related_df,
+                    case_id_col=related_columns.case_id,
+                    activity_col=related_columns.activity,
+                    start_col=related_columns.timestamp_start,
+                    end_col=related_columns.timestamp_end,
+                )
+
+                related_metadata = {
+                    "project_id": related_project.pk,
+                    "process_name": related_project.process,
+                    "department": getattr(related_project.department, "name", "N/A"),
+                    "team": getattr(related_project.team, "name", "N/A"),
+                }
+
+                response_data["Related_Project_Data"] = {
+                    "Metadata": related_metadata,
+                    "KPIs": json.loads(related_kpi_json),
+                }
+
+            except DefineColumns.DoesNotExist:
+                response_data["Related_Project_Data"] = {
+                    "error": f"Column definitions missing for related project ID {related_project_id}"
+                }
+            except FileNotFoundError:
+                response_data["Related_Project_Data"] = {"error": "CSV file not found for related project"}
+            except Exception as e:
+                response_data["Related_Project_Data"] = {"error": f"Error processing related project: {str(e)}"}
+
+        # 6️⃣ Send both KPI sets to AI for summary
+        # ai_summary = generate_complete_kpi_package_openai(response_data)
+
+        # 7️⃣ Return full AI response
+        return Response(response_data)
+
+    except Project.DoesNotExist:
+        return Response({"error": f"Project not found for ID {project_id}."}, status=404)
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": f"CSV file not found for project ID {project_id}."}, status=404)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"error": str(e)}, status=500)
+
+
+
+
+@api_view(['GET'])
+def process_variants(request, pk=None):
+    try:
+        time_param = request.query_params.get('time', None)
         project = Project.objects.get(pk=pk) 
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
         
-        project = Project.objects.get(pk=pk)
-        compair = Project.objects.get(pk=project.related_project__id)
-
-
+        columns = DefineColumns.objects.get(project=project)           
         file_path = project.csv_file.path
         df_log = pd.read_csv(file_path)
-
+  
         event_log_data = df_log.to_dict('records')
-
-       
+ 
+        result = calculate_variants_and_metrics(
+            event_log_data,              # List of event dictionaries
+            columns.case_id,                 # 'case_id' column name
+            columns.activity,                # 'activity' column name
+            columns.timestamp_start,         # 'timestamp_start' column name
+            columns.timestamp_end,      # Optional: 'timestamp_end' column name (needed for cycle time)
+            time_unit='hours'            # Unit for cycle time calculation
+)
         result_data = json.loads(result)
         
         return Response(result_data) 
@@ -1400,7 +2271,27 @@ def banchmark_report(request, pk=None):
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
-    except Exception as e:        
+    except Exception as e:       
         return Response({"error": str(e)}, status=500)
+    
+
+from .kpi_banchmark import generate_project_report
+
+@api_view(['GET'])
+def project_report(request, pk):
+    project = Project.objects.get(pk=pk)
+    columns = DefineColumns.objects.get(project=project)
+    df = pd.read_csv(project.csv_file.path)
+
+    report_json = generate_project_report(
+        df,
+        case_id_col=columns.case_id,
+        activity_col=columns.activity,
+        start_col=columns.timestamp_start,
+        end_col=columns.timestamp_end
+    )
+
+    return Response(json.loads(report_json))
+
 
 
