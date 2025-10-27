@@ -53,5 +53,8 @@ urlpatterns = [
     path('cycle-filter/<int:pk>/', views.time_series_cycle_time_metrics, name='cycle_filter'),
     path('kpi-summary-metrics/<int:pk>/', views.kpi_summary_metrics, name='cycle_filter'),
     path('process-variants/<int:pk>/', views.process_variants, name='process_variants'),
+    path('cost-per-process/<int:pk>/', views.cost_per_process_view, name='cost_per_case'),    
+    path('average-deviation-view/<int:pk>/', views.average_deviation_view, name='average_deviation'),
+    path('happy-path-compliance-rate/<int:pk>/', views.happy_path_compliance_view, name='happy_path_compliance_rate'),
 ]
 

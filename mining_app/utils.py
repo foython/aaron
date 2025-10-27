@@ -2,13 +2,7 @@ import pandas as pd
 from datetime import timedelta
 import json
 import math
-# class MockProject:
-#     objects = None # Should be Project.objects
-#     def __init__(self): self.user = None
-#     def __call__(self, *args, **kwargs): return self 
-# Project = MockProject
-# DefineColumns = MockProject
-# ProcessVariant = MockProject
+
 def calculate_net_working_time(start, end, start_h, end_h): return (end - start).total_seconds()
 def robust_to_datetime(series, utc=True):
     if series.empty: return series
@@ -69,10 +63,7 @@ import numpy as np
 
 
 def calculate_net_working_time(start_dt, end_dt, start_hour, end_hour):
-    """
-    Calculates the actual working time between two datetimes, respecting 
-    specified daily work hours and skipping weekends (Saturday/Sunday).
-    """
+    
     total_seconds = 0
     current_dt = start_dt
 
@@ -80,7 +71,7 @@ def calculate_net_working_time(start_dt, end_dt, start_hour, end_hour):
         return 0
 
     while current_dt < end_dt:
-        # Define work boundaries for the current day
+        
         work_day_start = current_dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
         work_day_end = current_dt.replace(hour=end_hour, minute=0, second=0, microsecond=0)
 
@@ -108,21 +99,19 @@ def calculate_net_working_time(start_dt, end_dt, start_hour, end_hour):
 
     return total_seconds
 
-# --- 2. Cycle Time Metrics Calculator with Date Filter (UNCHANGED) ---
+
 def calculate_all_cycle_time_metrics(
-    event_log_data,              # Event log data
-    case_id_col,                 # 'case_id' column name
-    start_time_col,              # 'timestamp_start' column name
-    complete_time_col,           # 'timestamp_complete' column name
-    office_start_hour=6,         # Project.start_hour
-    office_end_hour=18,          # Project.end_hour
+    event_log_data,              
+    case_id_col,                 
+    start_time_col,              
+    complete_time_col,           
+    office_start_hour=6,         
+    office_end_hour=18,          
     time_unit='hours',
-    start_date_filter=None,      # Optional start date for filtering (inclusive)
-    end_date_filter=None         # Optional end date for filtering (exclusive)
+    start_date_filter=None,      
+    end_date_filter=None         
 ):
-    """
-    Calculates key cycle time metrics using net working time.
-    """
+    
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
         
@@ -217,7 +206,7 @@ def get_cycle_time_over_period(
     try:
         df = pd.DataFrame(event_log_data)
 
-        # 1. Convert Timestamps and Calculate Case Cycle Times
+
         df[start_time_col] = pd.to_datetime(df[start_time_col], utc=True)
         df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
 
@@ -225,7 +214,7 @@ def get_cycle_time_over_period(
         case_end = df.groupby(case_id_col)[complete_time_col].max().rename('Case_End')
         df_cycle_times = pd.merge(case_start, case_end, on=case_id_col).reset_index()
         
-        # Calculate net working time using the helper function
+
         df_cycle_times['Adjusted_Cycle_Time_Seconds'] = df_cycle_times.apply(
             lambda row: calculate_net_working_time(
                 row['Case_Start'], 
@@ -238,7 +227,7 @@ def get_cycle_time_over_period(
         
         df_cycle_times['Cycle_Time_Days'] = df_cycle_times['Adjusted_Cycle_Time_Seconds'] / 86400.0
 
-        # 2. Apply Date Filters (if provided)
+
         if start_date_filter:
             start_filter_dt = pd.to_datetime(start_date_filter, utc=True)
             df_cycle_times = df_cycle_times[df_cycle_times['Case_Start'] >= start_filter_dt].copy()
@@ -251,32 +240,32 @@ def get_cycle_time_over_period(
             return json.dumps({"Warning": "No data available for analysis after filtering."}, indent=4)
 
 
-        # 3. Determine Aggregation Grouping
+
         agg_level = aggregation_level.lower()
         
         if agg_level == 'week':
-            # Group by ISO week (Monday-Sunday)
+
             df_cycle_times['Group_Period'] = df_cycle_times['Case_End'].dt.to_period('W').astype(str)
             period_name = 'week'
         elif agg_level == 'month':
-            # Group by calendar month
+
             df_cycle_times['Group_Period'] = df_cycle_times['Case_End'].dt.to_period('M').astype(str)
             period_name = 'month'
         elif agg_level == 'all':
-            # Group all data into one summary record
+
             df_cycle_times['Group_Period'] = 'All Time Summary'
             period_name = 'summary_period'
         else:
             return json.dumps({"Error": f"Invalid aggregation_level: '{aggregation_level}'. Must be 'week', 'month', or 'all'."}, indent=4)
 
-        # 4. Aggregate Metrics
+
         period_metrics = df_cycle_times.groupby('Group_Period')['Cycle_Time_Days'].agg(
             Average_Cycle_Time=('mean'),
             Median_Cycle_Time=('median'),
             Total_Cases=('size')
         ).reset_index()
 
-        # 5. Format Output
+
         period_metrics['Average_Cycle_Time'] = period_metrics['Average_Cycle_Time'].round(2)
         period_metrics['Median_Cycle_Time'] = period_metrics['Median_Cycle_Time'].round(2)
 
@@ -302,27 +291,23 @@ def calculate_total_cases(event_log_data, case_id_col, start_time_col, complete_
     try:
         df = pd.DataFrame(event_log_data)
         
-        # 1. Convert Timestamps
+
         df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
 
-        # 2. Determine Case End Times (Max complete time per case)
         case_end = df.groupby(case_id_col)[complete_time_col].max().rename('Case_End')
         df_cases = case_end.reset_index()
 
-        # 3. Apply Date Filters (based on Case End Time)
         filtered_df = df_cases.copy()
         
         if start_date_filter:
             start_filter_dt = pd.to_datetime(start_date_filter, utc=True)
-            # Filter cases that end on or after the start date
             filtered_df = filtered_df[filtered_df['Case_End'] >= start_filter_dt].copy()
         
         if end_date_filter:
-            end_filter_dt = pd.to_datetime(end_date_filter, utc=True)
-            # Filter cases that end before the end date (exclusive)
+            end_filter_dt = pd.to_datetime(end_date_filter, utc=True)         
             filtered_df = filtered_df[filtered_df['Case_End'] < end_filter_dt].copy()
 
-        # 4. Calculate final case count
+      
         num_cases = filtered_df[case_id_col].nunique()
 
         result = {
@@ -656,7 +641,6 @@ def calculate_average_activity_duration(
     try:
         df = pd.DataFrame(event_log_data)
         
-        # ... (Validation checks omitted for brevity but remain important) ...
         df[start_time_col] = pd.to_datetime(df[start_time_col], utc=True)
         df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
 
@@ -940,7 +924,7 @@ def calculate_variant_complexity_index(
         result = {
             "Total_Cases_Analyzed": int(total_cases),
             "Total_Unique_Process_Variants": int(total_unique_variants),
-            "Variant_Complexity_Index": round(variant_complexity_index, 4), # Ratio (0.0 to 1.0)
+            "Variant_Complexity_Index": round(variant_complexity_index, 4), 
             "Variant_Complexity_Index_Percentage": round(variant_complexity_index * 100, 2)
         }
         
@@ -1362,15 +1346,7 @@ def calculate_happy_path_deviation(
     complete_time_col, 
     happy_path_data
 ):
-    """
-    Calculates the average deviation (in steps and time) of non-compliant cases
-    from the defined Happy Path.
-    
-    Time deviation benchmark: Minimum cycle time of compliant cases.
-    Step deviation benchmark: Happy Path length.
-    
-    Also provides data for a bar chart showing activities causing deviation.
-    """
+   
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
 
@@ -1696,7 +1672,7 @@ def seconds_to_dhms(seconds):
     return " ".join(parts)
 
 
-def analyze_and_structure_process_data(
+def analyze_and_structure_process(
     event_log_data, 
     case_id_col='case_id', 
     activity_col='activity_name', 
@@ -1905,7 +1881,7 @@ import numpy as np
 import math
 from datetime import timedelta
 
-# --- Helper Function for Formatting Time ---
+
 def seconds_to_dhms(seconds):
     """Converts a total number of seconds into a days, hours, minutes, seconds string."""
     seconds = abs(seconds)
@@ -1928,7 +1904,6 @@ def seconds_to_dhms(seconds):
 
     return " ".join(parts)
 
-# --- MAIN COMPREHENSIVE ANALYSIS FUNCTION ---
 
 def analyze_and_structure_process_datas(
     event_log_data, 
@@ -2200,152 +2175,218 @@ def seconds_to_dhms(seconds):
 
     return " ".join(parts)
 
-# --- Internal Single Log Analyzer (Core Logic Reuse for comparison) ---
 
 
+from collections import defaultdict, Counter
 
 
-# --- NEW FUNCTION FOR PATH-BASED KPI BENCHMARKING (Single Log) ---
+def infer_step_index(df, case_id_col, start_time_col):
+    df = df.sort_values([case_id_col, start_time_col]).copy()
+    df["step_index"] = df.groupby(case_id_col).cumcount() + 1
+    return df
 
-def analyze_path_kpi_benchmarks(
+
+def infer_ideal_positions(df, case_id_col, activity_col):
+    pos_counts = defaultdict(Counter)
+    for _, row in df[[activity_col, "step_index"]].iterrows():
+        pos_counts[row[activity_col]][int(row["step_index"])] += 1
+
+    ideal_positions = {}
+    for act, counter in pos_counts.items():
+        most_common = counter.most_common()
+        if not most_common:
+            continue
+        top_freq = most_common[0][1]
+        candidates = [pos for pos, freq in most_common if freq == top_freq]
+        ideal_positions[act] = min(candidates)
+    return ideal_positions
+
+
+def compute_ideal_times(df, activity_col, ideal_positions):
+    ideal_times = {}
+    for act, pos in ideal_positions.items():
+        mask = (df[activity_col] == act) & (df["step_index"] == pos)
+        ideal_times[act] = float(df.loc[mask, "Event_Duration_Seconds"].median()) if mask.any() else None
+    return ideal_times
+
+
+def detect_loops(df, case_id_col, activity_col):
+    loop_records = []
+    loop_activities = set()
+    for case_id, group in df.groupby(case_id_col):
+        last_seen = {}
+        for _, row in group.iterrows():
+            act = row[activity_col]
+            idx = int(row["step_index"])
+            if act in last_seen:
+                loop_records.append({"case_id": case_id, "activity": act, "from": last_seen[act], "to": idx})
+                loop_activities.add(act)
+            last_seen[act] = idx
+    return loop_records, loop_activities
+
+
+def detect_dropouts(df, activity_col, case_id_col, ideal_positions):
+    activities = df[activity_col].unique().tolist()
+    dropout_cases_by_activity = {a: set() for a in activities}
+
+    ideal_sequence = sorted(ideal_positions.items(), key=lambda x: x[1])
+    ideal_steps = [a for a, _ in ideal_sequence]
+
+    for case_id, group in df.groupby(case_id_col):
+        performed_steps = set(group[activity_col].tolist())
+        missing = [s for s in ideal_steps if s not in performed_steps]
+        for m in missing:
+            dropout_cases_by_activity[m].add(case_id)
+
+    is_dropout_map = {a: len(cases) > 0 for a, cases in dropout_cases_by_activity.items()}
+    return is_dropout_map, dropout_cases_by_activity
+
+
+def detect_bottlenecks(activity_metrics, ideal_times, activity_col, threshold_sec: int = 3600):
+    """
+    Detect activities that take significantly longer than their ideal duration.
+    A bottleneck is flagged only if the delay (actual - ideal) > threshold_sec.
+    Default threshold: 3600 seconds (1 hour).
+    """
+    is_bottleneck_map = {}
+    bottleneck_delta_map = {}
+
+    for _, r in activity_metrics.iterrows():
+        act = r[activity_col]
+        actual_time = float(r["avg_duration"]) if pd.notnull(r["avg_duration"]) else 0.0
+        ideal_time_sec = ideal_times.get(act)
+
+        if ideal_time_sec is None or ideal_time_sec == 0:
+            is_bottleneck_map[act] = False
+            bottleneck_delta_map[act] = 0.0
+            continue
+
+        delay = actual_time - ideal_time_sec
+
+        if delay > threshold_sec:
+            is_bottleneck_map[act] = True
+            bottleneck_delta_map[act] = round(delay, 2)
+        else:
+            is_bottleneck_map[act] = False
+            bottleneck_delta_map[act] = 0.0
+
+    return is_bottleneck_map, bottleneck_delta_map
+
+
+# ---------------------------- MAIN FUNCTION ----------------------------
+
+def analyze_and_structure_process_data(
     event_log_data,
     case_id_col='case_id',
     activity_col='activity_name',
     start_time_col='start_time',
-    complete_time_col='complete_time'
+    complete_time_col='complete_time',
+    owner_map=None,
+    description_map=None,
+    extras_map=None,
 ):
-    """
-    Calculates the most frequent path and returns an ordered table of activities 
-    along that path, including average processing time and process problem flags 
-    (Loop, Bottleneck, Dropout).
-    
-    The output also includes a summary of the total counts for Loop, Bottleneck, 
-    and Dropout activities found in that path.
-    """
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
-    
+
     try:
         df = pd.DataFrame(event_log_data)
-        
-        # 1. Data Preparation
         df[start_time_col] = pd.to_datetime(df[start_time_col], utc=True)
         df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
-        df['duration'] = df[complete_time_col] - df[start_time_col]
-        
-        # Calculate overall average activity duration for bottleneck threshold
-        overall_avg_duration = df['duration'].mean()
+        df["Event_Duration_Seconds"] = (df[complete_time_col] - df[start_time_col]).dt.total_seconds()
 
-        # 2. Most Frequent Path Identification
-        df_paths = df.groupby(case_id_col)[activity_col].apply(lambda x: ' -> '.join(x)).reset_index(name='Process Path')
-        df_variants = df_paths['Process Path'].value_counts().reset_index()
-        df_variants.columns = ['Process Path', 'Frequency'] 
-        most_standard_path_string = df_variants.sort_values(by='Frequency', ascending=False).iloc[0]['Process Path']
-        standard_activities = [a.strip() for a in most_standard_path_string.split('->')]
+        df = infer_step_index(df, case_id_col, start_time_col)
+        ideal_positions = infer_ideal_positions(df, case_id_col, activity_col)
+        ideal_times = compute_ideal_times(df, activity_col, ideal_positions)
 
-        # 3. Problem Flag Calculation
+        activity_metrics = (
+            df.groupby(activity_col)
+            .agg(
+                avg_duration=("Event_Duration_Seconds", "mean"),
+                total_count=(activity_col, "size"),
+            )
+            .reset_index()
+        )
 
-        # A. Rework/Loop (Activity appears > 1 time in a case)
-        df_activity_counts = df.groupby([case_id_col, activity_col]).size().reset_index(name='count')
-        rework_activities = set(df_activity_counts[df_activity_counts['count'] > 1][activity_col].unique())
+        loop_records, loop_activities = detect_loops(df, case_id_col, activity_col)
+        is_dropout_map, dropout_cases_by_activity = detect_dropouts(df, activity_col, case_id_col, ideal_positions)
+        is_bottleneck_map, bottleneck_delta_map = detect_bottlenecks(activity_metrics, ideal_times, activity_col)
 
-        # B. Dropout (Non-final activity that frequently ends the case)
-        df_last_activities = df.groupby(case_id_col)[activity_col].last()
-        expected_end_activity = df_last_activities.mode().iloc[0] 
-        # Identify top 5 activities that are NOT the expected end activity but appear as the last activity
-        dropout_counts = df_last_activities[df_last_activities != expected_end_activity].value_counts()
-        major_dropout_points = set(dropout_counts.index[:5]) 
+        def sort_key(act_name):
+            return (ideal_positions.get(act_name, 999999), act_name.lower())
 
-        # 4. Activity Metrics and Merging
-        df_metrics = df.groupby(activity_col)['duration'].mean().reset_index()
-        df_metrics.rename(columns={'duration': 'avg_duration'}, inplace=True)
-        df_metrics['average_time_minutes'] = df_metrics['avg_duration'].dt.total_seconds() / 60
-        df_metrics.drop(columns=['avg_duration'], inplace=True)
-        
-        # C. Bottleneck (Avg time > Overall Avg time)
-        overall_avg_time_minutes = overall_avg_duration.total_seconds() / 60
-        df_metrics['is_bottleneck'] = df_metrics['average_time_minutes'] > overall_avg_time_minutes
+        ordered_activities = sorted(activity_metrics[activity_col].tolist(), key=sort_key)
+        loop_by_activity = defaultdict(list)
+        for rec in loop_records:
+            loop_by_activity[rec["activity"]].append(
+                {"case_id": rec["case_id"], "from": rec["from"], "to": rec["to"]}
+            )
 
-        # Merge problem flags
-        df_metrics['is_loop'] = df_metrics[activity_col].apply(lambda x: x in rework_activities)
-        df_metrics['is_dropout'] = df_metrics[activity_col].apply(lambda x: x in major_dropout_points)
+        process_flow_nodes = []
+        for idx, act in enumerate(ordered_activities, start=1):
+            metrics = activity_metrics.loc[activity_metrics[activity_col] == act].iloc[0]
+            avg_duration = float(metrics["avg_duration"])
+            total_count = int(metrics["total_count"])
 
-        # 5. Filter and Order by Most Frequent Path
-        df_path_kpi = df_metrics[df_metrics[activity_col].isin(standard_activities)].copy()
-        
-        df_path_kpi['order'] = pd.Categorical(df_path_kpi[activity_col], categories=standard_activities, ordered=True)
-        df_path_kpi = df_path_kpi.sort_values('order').drop(columns=['order'])
-        
-        df_path_kpi['serial_number'] = range(1, len(df_path_kpi) + 1)
-        df_path_kpi.rename(columns={activity_col: 'activity_name'}, inplace=True)
-        df_path_kpi['average_time_minutes'] = df_path_kpi['average_time_minutes'].round(2)
+            descriptions = [f"{act} occurred {total_count} times in the log."]
+            if is_bottleneck_map.get(act):
+                delay = bottleneck_delta_map.get(act, 0.0)
+                descriptions.append(f"There is a bottleneck in this step ({act}) — delay: {delay} sec.")
+            if is_dropout_map.get(act):
+                ex_cases = sorted(list(dropout_cases_by_activity.get(act, [])))
+                if ex_cases:
+                    case_list = ", ".join(ex_cases[:5])
+                    descriptions.append(f"There is dropout in case(s): {case_list} — \"{act}\" was missed from these processes.")
 
-        # 6. Final Structure (Path Activities)
-        json_output = df_path_kpi[[
-            'serial_number', 
-            'activity_name', 
-            'average_time_minutes', 
-            'is_loop', 
-            'is_bottleneck', 
-            'is_dropout'
-        ]].to_dict('records')
-        
-        # 7. Calculate overall summary counts for the path
-        loop_count = int(df_path_kpi['is_loop'].sum())
-        bottleneck_count = int(df_path_kpi['is_bottleneck'].sum())
-        dropout_count = int(df_path_kpi['is_dropout'].sum())
+            node = {
+                "id": str(idx),
+                "label": act,
+                "value": str(round(avg_duration / 60, 2)),
+                "status": "in-progress",
+                "owner": owner_map.get(act, "Unassigned") if owner_map else "Unassigned",
+                "descriptions": descriptions,
+                "Is_Bottlenecks": "Yes" if is_bottleneck_map.get(act) else "No",
+                "Is_Dropout": "Yes" if is_dropout_map.get(act) else "No",
+                "hasLoop": act in loop_activities,
+                "extras": extras_map.get(act, []) if extras_map else [],
+            }
 
-        return json.dumps({
-            "most_frequent_path": most_standard_path_string,
-            "path_kpi_summary": {
-                "total_activities_in_path": len(standard_activities),
-                "total_loop_activities": loop_count,
-                "total_bottleneck_activities": bottleneck_count,
-                "total_dropout_activities": dropout_count
-            },
-            "path_kpi_benchmark_table": json_output
-        }, indent=4)
+            if loop_by_activity.get(act):
+                node["loopConnections"] = loop_by_activity[act]
+            process_flow_nodes.append(node)
+
+        return json.dumps({"process_flow_nodes": process_flow_nodes}, indent=4)
 
     except Exception as e:
-        import traceback
-        return json.dumps({"Error": f"An error occurred during path KPI analysis: {e}", "Traceback": traceback.format_exc()}, indent=4)
+        return json.dumps({"Error": f"An error occurred: {e}"}, indent=4)
 
 
 
 
 def calculate_kpi_summary(event_log_data, case_id_col, activity_col, timestamp_start, timestamp_end, office_start_hour, office_end_hour):
-    """
-    Calculates a comprehensive set of process KPIs including cycle times, steps, loops, and bottlenecks 
-    using the entire event log data (no date filtering applied).
-    """
+   
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
 
     try:
         df = pd.DataFrame(event_log_data)
         
-        # 1. Data Preparation
         df[timestamp_start] = pd.to_datetime(df[timestamp_start], utc=True)
         df[timestamp_end] = pd.to_datetime(df[timestamp_end], utc=True)
         
-        # Sort log by case ID and start time for sequence-dependent metrics (loops, bottlenecks)
         df = df.sort_values(by=[case_id_col, timestamp_start]).reset_index(drop=True)
 
-        # Determine Case Start/End Times (for Cycle Time)
         case_start = df.groupby(case_id_col)[timestamp_start].min().rename('Case_Start')
         case_end = df.groupby(case_id_col)[timestamp_end].max().rename('Case_End')
         df_cases = pd.merge(case_start, case_end, on=case_id_col).reset_index()
-        
-        # --- Base Metrics ---
+
         total_cases = df_cases[case_id_col].nunique()
-        completed_cases = total_cases # Assuming all cases that exist in df_cases are completed
+        completed_cases = total_cases 
 
         if total_cases == 0:
             return json.dumps({"Warning": "No cases found in the event log."}, indent=4)
 
         dropout_rate = 0.0
 
-        # --- Cycle Time Metrics ---
         
         df_cases['Adjusted_Cycle_Time_Seconds'] = df_cases.apply(
             lambda row: calculate_net_working_time(
@@ -2356,8 +2397,7 @@ def calculate_kpi_summary(event_log_data, case_id_col, activity_col, timestamp_s
             ), 
             axis=1
         )
-        
-        # Convert cycle time to Hours
+
         df_cases['Adjusted_Cycle_Time_Hours'] = df_cases['Adjusted_Cycle_Time_Seconds'] / 3600.0
 
         median_cycle_time_h = df_cases['Adjusted_Cycle_Time_Hours'].median()
@@ -2367,52 +2407,39 @@ def calculate_kpi_summary(event_log_data, case_id_col, activity_col, timestamp_s
         min_cycle_time_h = df_cases['Adjusted_Cycle_Time_Hours'].min()
         max_cycle_time_h = df_cases['Adjusted_Cycle_Time_Hours'].max()
 
-        # --- Steps/Case Metrics ---
         
         steps_per_case = df.groupby(case_id_col).size()
         median_steps = steps_per_case.median()
         average_steps = steps_per_case.mean()
 
-        # --- Loops/Rework Metrics ---
-        
-        # Identify cases where the same activity appears more than once (rework/loop)
         looped_cases_df = df.groupby(case_id_col)[activity_col].apply(lambda x: x.duplicated().any())
         total_loops_cases = looped_cases_df.sum()
         
         loops_ratio = (total_loops_cases / total_cases) * 100
 
-        # --- Bottleneck Analysis (Idle Time between activities) ---
-        
-        # 1. Calculate the time difference between the current activity's end and the next activity's start
         df['Next_Start'] = df.groupby(case_id_col)[timestamp_start].shift(-1)
         df['Idle_Time_Seconds'] = (df['Next_Start'] - df[timestamp_end]).dt.total_seconds()
         
-        # Filter out NaN (last event in case) and negative times 
+
         df_idle = df[df['Idle_Time_Seconds'].notna() & (df['Idle_Time_Seconds'] >= 0)].copy()
 
-        # 2. Group idle time by the activity *preceding* the wait
-        # This identifies WHICH activity causes the wait for the NEXT one.
         idle_time_by_activity = df_idle.groupby(activity_col)['Idle_Time_Seconds'].mean()
         
         if idle_time_by_activity.empty:
              largest_bottleneck = "N/A"
              bottleneck_severity_min = 0.0
         else:
-            # Convert to minutes for severity reporting
+
             idle_time_by_activity_min = idle_time_by_activity / 60.0
-            
-            # Find the activity with the maximum average idle time (The overall largest)
+
             largest_bottleneck = idle_time_by_activity_min.idxmax()
             bottleneck_severity_min = idle_time_by_activity_min.max()
 
-        # 3. Handle specific requested bottlenecks (Payment Monitoring and Receipt Reconciled)
-        # .get() will return 0.0 if the activity name isn't found in the log
         payment_monitoring_severity = idle_time_by_activity_min.get('Payment Monitoring', 0.0)
         receipt_reconciled_severity = idle_time_by_activity_min.get('Receipt Reconciled', 0.0)
 
 
-        # --- Final Results Packaging ---
-        
+      
         results = {
             "Total_Cases": int(total_cases),
             "Completed_Cases": int(completed_cases),
@@ -2427,10 +2454,10 @@ def calculate_kpi_summary(event_log_data, case_id_col, activity_col, timestamp_s
             "Average_Steps_Case": round(average_steps, 2) if not pd.isna(average_steps) else 0.0,
             "Total_Loops_Cases": int(total_loops_cases),
             "Loops_Ratio_pct": round(loops_ratio, 2),
-            # Key 1: The overall largest (dynamic) bottleneck
+            
             "Largest_Bottleneck_Activity": largest_bottleneck,
             "Bottleneck_Severity_min": round(bottleneck_severity_min, 2),
-            # Key 2 & 3: Specific requested bottlenecks
+            
             "Payment_Monitoring_Severity_min": round(payment_monitoring_severity, 2),
             "Receipt_Reconciled_Severity_min": round(receipt_reconciled_severity, 2),
         }
@@ -2459,31 +2486,24 @@ def filter_event_log_pre_kpi(
     max_cycle_time: Optional[float] = None,
     time_unit: str = "hours"
 ) -> pd.DataFrame:
-    """
-    Filter the event log using Date and Variant filters, and then apply 
-    Cycle Time filters by calculating the case cycle time on-the-fly.
-    """
+    
     filtered_df = df.copy()
     try:
         filtered_df[timestamp_start_col] = pd.to_datetime(
             filtered_df[timestamp_start_col], errors='coerce'
         )
-        # Ensure the completion timestamp column is also converted
+       
         filtered_df[timestamp_complete_col] = pd.to_datetime(
             filtered_df[timestamp_complete_col], errors='coerce'
         )
     except KeyError as e:
-        # Provide a clearer error if expected columns are missing
+       
         raise ValueError(f"Missing timestamp column in CSV: {e}")
-    except Exception as e:
-        # Handle cases where conversion fails (e.g., unexpected data types)
+    except Exception as e:        
         raise ValueError(f"Error converting timestamps to datetime: {e}")
 
-    # --- 1. Pre-processing: Ensure Timestamps are in datetime format ---
     filtered_df[timestamp_start_col] = pd.to_datetime(filtered_df[timestamp_start_col])
-    
-    # --- 2. Date Filter (based on case START time) ---
-    # Case start times are calculated BEFORE filtering to avoid issues with partial cases
+
     case_start_times = filtered_df.groupby(case_id_col)[timestamp_start_col].min().reset_index()
     
     if start_date:
@@ -2494,61 +2514,44 @@ def filter_event_log_pre_kpi(
     if end_date:
         end_dt = pd.to_datetime(end_date)
         valid_cases = case_start_times[case_start_times[timestamp_start_col] <= end_dt][case_id_col]
-        # Filter the DataFrame based on cases that passed the date filter
+
         filtered_df = filtered_df[filtered_df[case_id_col].isin(valid_cases)]
 
     if selected_variants and len(selected_variants) > 0:
         
-        # 1. Calculate the Variant Path for all cases in the *currently filtered* log (after date filter)
-        # Group by case ID and aggregate the activity names into a list
+
         case_activities = filtered_df.groupby(case_id_col)[variant_col].apply(list).reset_index(name='activities')
 
-        # Convert the list of activities into the variant path string
         case_activities['calculated_variant_path'] = case_activities['activities'].apply(
             lambda x: ' -> '.join(x)
         )
-        
-        # 2. Standardize and Clean for filtering (Crucial for string matching)
-        
-        # Clean the calculated paths
+
         clean_calculated_paths = case_activities['calculated_variant_path'].str.lower().str.strip()
-        
-        # Clean the input filter list (the paths from the database)
+
         clean_selected_variants = [v.lower().strip() for v in selected_variants]
 
-        # 3. Identify the Case IDs that match the selected variant paths
-        
-        # Find the indices of the matching paths in the temporary table
         matching_indices = clean_calculated_paths.isin(clean_selected_variants)
-        
-        # Extract the unique Case IDs corresponding to these matches
+      
         matching_case_ids = case_activities[matching_indices][case_id_col].unique()
 
-        # 4. Filter the main event log (filtered_df) using these Case IDs
         filtered_df = filtered_df[filtered_df[case_id_col].isin(matching_case_ids)]
-    # --- 4. Cycle Time Filter (Calculated on-the-fly) ---
-    # ... (Step 4 remains the same as it correctly operates on the case_id_col) ...
+
     if min_cycle_time is not None or max_cycle_time is not None:
         
         if filtered_df.empty:
              return filtered_df
-             
-        # Calculate Case Start Time (min) and Case End Time (max)
+
         case_times = filtered_df.groupby(case_id_col).agg(
             case_start=(timestamp_start_col, 'min'),
             case_end=(timestamp_complete_col, 'max')
         ).reset_index()
         
-        # ⭐️ CRITICAL FIX: Ensure final aggregated columns are datetime just before subtraction ⭐️
-        # This double-checks the aggregation result, preventing the ndarray error.
+
         case_times['case_start'] = pd.to_datetime(case_times['case_start'])
         case_times['case_end'] = pd.to_datetime(case_times['case_end'])
-        
-        # Calculate Cycle Time (Time Delta)
-        # This subtraction (case_end - case_start) will now correctly produce a Timedelta object.
+
         case_times['cycle_time_delta'] = case_times['case_end'] - case_times['case_start']
-        
-        # ... (rest of the cycle time conversion and filtering logic remains the same) ...
+
         unit_factor = {"seconds": 1, "minutes": 60, "hours": 3600, "days": 86400}
         divisor = unit_factor.get(time_unit.lower(), 3600)
         
@@ -2571,3 +2574,186 @@ def filter_event_log_pre_kpi(
         ]
 
     return filtered_df
+
+
+
+import pandas as pd
+import json
+from .models import HappyPath
+
+def calculate_cost_per_process(event_log_data, activity_col, start_time_col, complete_time_col, project):
+   
+    if not event_log_data:
+        return json.dumps({
+            "total_cost_all_activities": 0.0,
+            "activities_cost_breakdown": [],
+            "currency": "USD"
+        })
+
+    df = pd.DataFrame(event_log_data)
+    df[start_time_col] = pd.to_datetime(df[start_time_col], errors='coerce', utc=True)
+    df[complete_time_col] = pd.to_datetime(df[complete_time_col], errors='coerce', utc=True)
+
+    happy_steps = HappyPath.objects.filter(project=project)
+    if not happy_steps.exists():
+        return json.dumps({
+            "total_cost_all_activities": 0.0,
+            "activities_cost_breakdown": [],
+            "note": "No HappyPath data found for this project.",
+            "currency": "USD"
+        })
+
+    activity_counts = df[activity_col].value_counts().to_dict()
+
+    cost_summary = []
+    total_cost = 0.0
+
+    for step in happy_steps:
+        activity = step.activity_name.strip()
+        count = activity_counts.get(activity, 0)
+        step_cost = float(step.cost or 0.0)
+        total_activity_cost = round(count * step_cost, 2)
+        total_cost += total_activity_cost
+
+        cost_summary.append({
+            "activity_name": activity,
+            "occurrences": count,
+            "cost_per_occurrence": step_cost,
+            "total_activity_cost": total_activity_cost
+        })
+
+    result = {
+        "total_cost_all_activities": round(total_cost, 2),
+        "activities_cost_breakdown": cost_summary,
+        "currency": "USD",
+        "project_id": project.id,
+        "process_name": project.process
+    }
+
+    return json.dumps(result, indent=4)
+
+
+
+def calculate_average_deviation_from_happy_path(event_log_data, case_id_col, activity_col, start_time_col, complete_time_col, project):
+ 
+    if not event_log_data:
+        return json.dumps({
+            "avg_step_deviation": 0.0,
+            "avg_time_deviation_hours": 0.0,
+            "cases_analyzed": 0,
+            "note": "No event log data provided."
+        })
+
+    df = pd.DataFrame(event_log_data)
+    if df.empty or any(c not in df.columns for c in [case_id_col, activity_col, start_time_col, complete_time_col]):
+        return json.dumps({
+            "avg_step_deviation": 0.0,
+            "avg_time_deviation_hours": 0.0,
+            "cases_analyzed": 0,
+            "note": "Missing required columns in event log."
+        })
+
+    happy_steps = HappyPath.objects.filter(project=project).order_by("serial_number")
+    happy_activities = [step.activity_name.strip() for step in happy_steps]
+    happy_total_minutes = sum(float(step.average_time_minutes) for step in happy_steps)
+
+    if not happy_activities:
+        return json.dumps({
+            "avg_step_deviation": 0.0,
+            "avg_time_deviation_hours": 0.0,
+            "cases_analyzed": 0,
+            "note": "No Happy Path defined for this project."
+        })
+
+    df[start_time_col] = pd.to_datetime(df[start_time_col], errors='coerce', utc=True)
+    df[complete_time_col] = pd.to_datetime(df[complete_time_col], errors='coerce', utc=True)
+
+    step_deviations = []
+    time_deviations = []
+
+    for case_id, group in df.groupby(case_id_col):
+        activities = group[activity_col].dropna().astype(str).str.strip().tolist()
+
+        missing = len([a for a in happy_activities if a not in activities])
+        extra = len([a for a in activities if a not in happy_activities])
+        step_dev = missing + extra
+        step_deviations.append(step_dev)
+
+        case_start = group[start_time_col].min()
+        case_end = group[complete_time_col].max()
+        case_duration_hours = (case_end - case_start).total_seconds() / 3600 if pd.notna(case_start) and pd.notna(case_end) else 0
+        happy_duration_hours = happy_total_minutes / 60
+        time_dev = abs(case_duration_hours - happy_duration_hours)
+        time_deviations.append(time_dev)
+
+    
+    avg_step_dev = round(sum(step_deviations) / len(step_deviations), 2) if step_deviations else 0.0
+    avg_time_dev = round(sum(time_deviations) / len(time_deviations), 2) if time_deviations else 0.0
+
+    result = {
+        "avg_step_deviation": avg_step_dev,
+        "avg_time_deviation_hours": avg_time_dev,
+        "cases_analyzed": len(step_deviations),
+        "happy_path_steps": happy_activities,
+        "happy_path_expected_duration_hours": round(happy_total_minutes / 60, 2)
+    }
+
+    return json.dumps(result, indent=4)
+
+
+
+
+def calculate_happy_path_compliance_rate(event_log_data, case_id_col, activity_col, project):
+   
+    if not event_log_data:
+        return json.dumps({
+            "happy_path_compliance_rate": 0.0,
+            "total_cases": 0,
+            "compliant_cases": 0,
+            "non_compliant_cases": 0,
+            "note": "No event log data."
+        })
+
+    df = pd.DataFrame(event_log_data)
+    if df.empty or any(c not in df.columns for c in [case_id_col, activity_col]):
+        return json.dumps({
+            "happy_path_compliance_rate": 0.0,
+            "total_cases": 0,
+            "compliant_cases": 0,
+            "non_compliant_cases": 0,
+            "note": "Missing required columns."
+        })
+
+    happy_steps = HappyPath.objects.filter(project=project).order_by("serial_number")
+    happy_sequence = [step.activity_name.strip() for step in happy_steps]
+
+    if not happy_sequence:
+        return json.dumps({
+            "happy_path_compliance_rate": 0.0,
+            "total_cases": 0,
+            "compliant_cases": 0,
+            "non_compliant_cases": 0,
+            "note": "No Happy Path defined for this project."
+        })
+
+    total_cases = 0
+    compliant_cases = 0
+
+    for case_id, group in df.groupby(case_id_col):
+        total_cases += 1
+        actual_sequence = group[activity_col].dropna().astype(str).str.strip().tolist()
+
+        if actual_sequence == happy_sequence:
+            compliant_cases += 1
+
+    compliance_rate = round((compliant_cases / total_cases) * 100, 2) if total_cases > 0 else 0.0
+
+    result = {
+        "happy_path_compliance_rate": compliance_rate,
+        "total_cases": total_cases,
+        "compliant_cases": compliant_cases,
+        "non_compliant_cases": total_cases - compliant_cases,
+        "happy_path_reference": " -> ".join(happy_sequence)
+    }
+
+    return json.dumps(result, indent=4)

@@ -74,6 +74,7 @@ class HappyPath(models.Model):
     serial_number = models.IntegerField()
     activity_name = models.CharField(max_length=100)   
     average_time_minutes = models.DecimalField(max_digits=8, decimal_places=2)
+    cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
     class Meta:        
         ordering = ['serial_number']

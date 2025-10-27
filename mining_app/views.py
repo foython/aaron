@@ -24,6 +24,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 import json
 from .fil import *
+import re 
 # from .filter import filter_event_log_pre_kpi
 
 
@@ -1546,7 +1547,7 @@ def variant_change_over_time(request, pk=None):
             columns.case_id,
             columns.activity,
             columns.timestamp_end,
-            time_period=time_param.upper() # 'D' for Daily, 'W' for Weekly, 'M' for Monthly
+            time_period='M' # 'D' for Daily, 'W' for Weekly, 'M' for Monthly
         )
         result_data = json.loads(result)
         
@@ -1846,7 +1847,7 @@ def case_throughput_rate(request, pk=None):
             event_log_data, 
             columns.case_id, 
             columns.timestamp_end,
-            period=time_param.upper() # 'D' for Day, 'W' for Week, 'M' for Month
+            period='M' # 'D' for Day, 'W' for Week, 'M' for Month
         )
         result_data = json.loads(result)
         
@@ -2020,7 +2021,7 @@ def actual_path_data_with_connections(request, pk=None):
   
         event_log_data = df_log.to_dict('records')
  
-        result = analyze_and_structure_process_data(
+        result = analyze_and_structure_process(
             event_log_data, 
             columns.case_id, 
             columns.activity,
@@ -2038,42 +2039,55 @@ def actual_path_data_with_connections(request, pk=None):
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
     except Exception as e:       
         return Response({"error": str(e)}, status=500)
-    
+
 
 
 @api_view(['GET'])
 def actual_path_data_with(request, pk=None):
     try:
-        time_param = request.query_params.get('time', None)
-        project = Project.objects.get(pk=pk) 
+        project = Project.objects.get(pk=pk)
+
         if project.user != request.user:
-            return Response({"error": "You do not have permission to access this project."}, status=403)
-        
-        columns = DefineColumns.objects.get(project=project)           
+            return Response(
+                {"error": "You do not have permission to access this project."},
+                status=403
+            )
+
+        columns = DefineColumns.objects.get(project=project)
+
         file_path = project.csv_file.path
         df_log = pd.read_csv(file_path)
-  
+
         event_log_data = df_log.to_dict('records')
- 
         result = analyze_and_structure_process_datas(
-            event_log_data, 
-            columns.case_id, 
+            event_log_data,
+            columns.case_id,
             columns.activity,
             columns.timestamp_start,
             columns.timestamp_end
-            
         )
         result_data = json.loads(result)
-        
-        return Response(result_data) 
+
+        if "global_metrics" in result_data:
+            result_data["global_metrics"]["happy_path"] = columns.happy_path
+        else:
+            result_data["global_metrics"] = {"happy_path": columns.happy_path}
+
+        return Response(result_data)
 
     except DefineColumns.DoesNotExist:
         return Response({"error": "Column definitions not found for this project."}, status=404)
     except FileNotFoundError:
         return Response({"error": f"CSV file not found at path: {file_path}"}, status=404)
-    except Exception as e:       
+    except Project.DoesNotExist:
+        return Response({"error": f"Project not found for id {pk}."}, status=404)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response({"error": str(e)}, status=500)
-    
+
+
+
 
 @api_view(['GET'])
 def actual_path_data_with_problems(request, pk=None):
@@ -2089,7 +2103,7 @@ def actual_path_data_with_problems(request, pk=None):
   
         event_log_data = df_log.to_dict('records')
  
-        result = analyze_path_kpi_benchmarks(
+        result = analyze_and_structure_process_data(
             event_log_data, 
             columns.case_id, 
             columns.activity,
@@ -2145,21 +2159,17 @@ def kpi_summary_metrics(request, pk=None):
     response_data = {}
 
     try:
-        # 1️⃣ Fetch Current Project
+
         project = Project.objects.get(pk=project_id)
 
-        # Check permission
         if project.user != request.user:
             return Response({"error": "You do not have permission to access this project."}, status=403)
 
-        # 2️⃣ Get column definitions
         columns = DefineColumns.objects.get(project=project)
 
-        # 3️⃣ Read CSV file and calculate KPIs
         file_path = project.csv_file.path
         df_log = pd.read_csv(file_path)
 
-        # --- Calculate all KPI metrics for current project ---
         current_kpi_json = generate_project_report(
             df=df_log,
             case_id_col=columns.case_id,
@@ -2168,7 +2178,6 @@ def kpi_summary_metrics(request, pk=None):
             end_col=columns.timestamp_end,
         )
 
-        # 4️⃣ Project metadata
         project_metadata = {
             "project_id": project.pk,
             "process_name": project.process,
@@ -2181,7 +2190,7 @@ def kpi_summary_metrics(request, pk=None):
             "KPIs": json.loads(current_kpi_json),
         }
 
-        # 5️⃣ Check Related Project
+   
         response_data["Related_Project_Data"] = None
 
         if project.related_project:
@@ -2221,11 +2230,10 @@ def kpi_summary_metrics(request, pk=None):
             except Exception as e:
                 response_data["Related_Project_Data"] = {"error": f"Error processing related project: {str(e)}"}
 
-        # 6️⃣ Send both KPI sets to AI for summary
-        # ai_summary = generate_complete_kpi_package_openai(response_data)
+        ai_summary = generate_complete_kpi_package_openai(response_data)
 
         # 7️⃣ Return full AI response
-        return Response(response_data)
+        return Response(ai_summary)
 
     except Project.DoesNotExist:
         return Response({"error": f"Project not found for ID {project_id}."}, status=404)
@@ -2295,3 +2303,99 @@ def project_report(request, pk):
 
 
 
+@api_view(['GET'])
+def cost_per_process_view(request, pk=None):
+    
+    try:
+        project = Project.objects.get(pk=pk)
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+
+        columns = DefineColumns.objects.get(project=project)
+        file_path = project.csv_file.path
+        df_log = pd.read_csv(file_path)
+        event_log_data = df_log.to_dict('records')
+
+        result_json = calculate_cost_per_process(
+            event_log_data=event_log_data,
+            activity_col=columns.activity,
+            start_time_col=columns.timestamp_start,
+            complete_time_col=columns.timestamp_end,
+            project=project
+        )
+
+        result_data = json.loads(result_json)
+        return Response(result_data)
+
+    except Project.DoesNotExist:
+        return Response({"error": f"Project not found for id {pk}."}, status=404)
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column definitions not found for this project."}, status=404)
+    except FileNotFoundError:
+        return Response({"error": "CSV file not found for this project."}, status=404)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"error": str(e)}, status=500)
+    
+
+
+
+@api_view(['GET'])
+def average_deviation_view(request, pk=None):
+    
+    try:
+        project = Project.objects.get(pk=pk)
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+
+        columns = DefineColumns.objects.get(project=project)
+        df_log = pd.read_csv(project.csv_file.path)
+        event_log_data = df_log.to_dict('records')
+
+        result_json = calculate_average_deviation_from_happy_path(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity,
+            start_time_col=columns.timestamp_start,
+            complete_time_col=columns.timestamp_end,
+            project=project
+        )
+
+        result_data = json.loads(result_json)
+        return Response(result_data, status=200)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"error": str(e)}, status=500)
+    
+
+
+
+@api_view(['GET'])
+def happy_path_compliance_view(request, pk=None):
+   
+    try:
+        project = Project.objects.get(pk=pk)
+        if project.user != request.user:
+            return Response({"error": "You do not have permission to access this project."}, status=403)
+
+        columns = DefineColumns.objects.get(project=project)
+        df = pd.read_csv(project.csv_file.path)
+        event_log_data = df.to_dict('records')
+
+        result_json = calculate_happy_path_compliance_rate(
+            event_log_data=event_log_data,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity,
+            project=project
+        )
+
+        result_data = json.loads(result_json)
+        return Response(result_data, status=200)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"error": str(e)}, status=500)

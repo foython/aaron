@@ -21,7 +21,7 @@ from django.utils import timezone
 
 import stripe
 stripe.api_key = os.getenv("STRIPE_API_KEY")
-
+User = get_user_model()
 
 @csrf_exempt
 @api_view(['POST'])
@@ -32,6 +32,12 @@ def create_subscription_session(request):
         amount = int(float(request.data["amount"]) * 100)  # in cents
         currency = request.data.get("currency", "usd")
         plan_data = json.dumps(request.data.get("plan_data", {}))
+        user = User.objects.get(email=email)
+        if user.is_subscribed:
+            return Response(
+                {"error": "User already has an active subscription."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # 1️⃣ Create or retrieve customer
         customers = stripe.Customer.list(email=email).data
