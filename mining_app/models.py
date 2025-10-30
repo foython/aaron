@@ -41,7 +41,7 @@ class Project(TimeStamp):
         related_name='sub_projects'
     )
     is_related = models.BooleanField(default=False)
-
+    copy = models.BooleanField(default=False)
     def __str__(self):
         return f'{self.id} {self.process}'
 
@@ -137,3 +137,13 @@ class ProcessVariant(TimeStamp):
 
     def __str__(self):
         return f"{self.variant_path[:50]}... ({self.case_count} cases)"
+
+
+
+class CostPerProcess(TimeStamp):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE)
+    activity_name = models.CharField(max_length=128)
+    cost_per_h = models.DecimalField(max_digits=10, decimal_places=2)
+
+    def __str__(self):
+        return f"{self.activity_name}"

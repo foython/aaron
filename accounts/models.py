@@ -20,6 +20,7 @@ class CustomUser(AbstractUser, TimeStamp):
     last_name = models.CharField(max_length=64, blank=True, null=True)    
     gender = models.CharField(max_length=28, blank=True, null=True)
     profession = models.CharField(max_length=64, blank=True, null=True)
+    company_name = models.CharField(max_length=256, blank=True, null=True)
     date_of_birth = models.DateField(blank=True, null=True)
     profile_picture = models.ImageField(upload_to='profile/', blank=True, null=True)
     phone_number = models.CharField(max_length=28, blank=True, null=True)

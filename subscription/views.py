@@ -60,7 +60,7 @@ def create_subscription_session(request):
                 "user_email": email,
                 "plan_data": plan_data,
             },
-            success_url=f"http://10.10.13.92:8000/success?session_id={{CHECKOUT_SESSION_ID}}",
+            success_url=f"http://localhost:7006/dashboard/priceing?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"http://10.10.13.92:8000/cancel",
         )
 

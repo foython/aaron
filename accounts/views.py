@@ -127,7 +127,7 @@ def normal_login(request):
         return Response({"Message": "Both Username and password are required."}, status=400)
   
     user = authenticate(username=email, password=password)
-
+    
     if user is not None:
         refresh = RefreshToken.for_user(user)
         access_token = refresh.access_token

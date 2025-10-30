@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Department, Team, Project, DefineColumns, HappyPath, kpiList, Visualization, kpiDashboard, ProcessVariant
+from .models import Department, Team, Project, DefineColumns, HappyPath, kpiList, Visualization, kpiDashboard, ProcessVariant, CostPerProcess
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
@@ -28,7 +28,7 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Project        
-        fields = ['id', 'user', 'process', 'department', 'team', 'department_id', 'team_id', 'csv_file', 'status', 'related_project', 'is_related', 'created_at', 'updated_at']
+        fields = ['id', 'user', 'process', 'department', 'team', 'department_id', 'team_id', 'csv_file', 'status', 'related_project', 'copy', 'is_related', 'created_at', 'updated_at']
         read_only_fields = ['user', 'created_at', 'updated_at']
         
 
@@ -100,3 +100,11 @@ class ProcessVariantSerializer(serializers.ModelSerializer):
             'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
+
+
+class CostPerProcessSerializer(serializers.ModelSerializer):
+    
+    class Meta:
+        model = CostPerProcess
+        fields = ['id', 'project', 'activity_name', 'cost_per_h', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']

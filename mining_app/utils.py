@@ -2,6 +2,7 @@ import pandas as pd
 from datetime import timedelta
 import json
 import math
+from .models import CostPerProcess
 
 def calculate_net_working_time(start, end, start_h, end_h): return (end - start).total_seconds()
 def robust_to_datetime(series, utc=True):
@@ -14,46 +15,107 @@ def robust_to_datetime(series, utc=True):
     if utc and not dt_series.dt.tz: dt_series = dt_series.dt.tz_localize('UTC', errors='coerce')
     return dt_series
 
-def analyze_standard_path_performance_json(file_path):
- 
+def analyze_standard_path_performance_json(
+    file_path,
+    case_id_col='case_id',
+    activity_col='activity',
+    start_time_col='timestamp_start',
+    complete_time_col='timestamp_complete'
+):
+    """
+    Analyze standard (most frequent) process path and calculate average time per step.
+    Automatically supports custom column names (like DefineColumns in your project).
+    Returns JSON (list of steps with serial_number, activity_name, average_time_minutes).
+    """
     try:
         df = pd.read_csv(file_path)
     except Exception as e:
         print(f"Error reading file: {e}")
-        return [] # Return an empty list on failure
+        return []
 
-    df['timestamp_start'] = pd.to_datetime(df['timestamp_start'])
-    df['timestamp_complete'] = pd.to_datetime(df['timestamp_complete'])
-    df['duration'] = df['timestamp_complete'] - df['timestamp_start']
+    # --- Auto-correct columns (flexible handling for naming differences) ---
+    rename_map = {}
 
-    df_paths = df.groupby('case_id')['activity'].apply(lambda x: ' -> '.join(x)).reset_index()
-    df_variants = df_paths['activity'].value_counts().reset_index()
-    
-    # 💥 CRITICAL FIX: Ensure column names are set correctly 💥
-    df_variants.columns = ['Process Path (Variant)', 'Frequency'] 
-    
-    most_standard_path_string = df_variants.sort_values(by='Frequency', ascending=False).iloc[0]['Process Path (Variant)']
-    standard_path_activities = [a.strip() for a in most_standard_path_string.split('->')]
+    # Normalize activity column
+    if activity_col not in df.columns:
+        possible_activity_cols = ["activity", "activity_name", "step", "task"]
+        for col in possible_activity_cols:
+            if col in df.columns:
+                rename_map[col] = activity_col
+                break
 
-    df_avg_time = df.groupby('activity')['duration'].mean().reset_index()
-    df_avg_time.rename(columns={'duration': 'Average Time (Duration)'}, inplace=True)
+    # Normalize timestamp columns
+    possible_start_cols = ["timestamp_start", "start_time", "StartTime", "begin"]
+    possible_end_cols = ["timestamp_end", "timestamp_complete", "complete_time", "end_time", "finish"]
 
-    df_filtered = df_avg_time[df_avg_time['activity'].isin(standard_path_activities)].copy()
-    df_filtered['order'] = pd.Categorical(df_filtered['activity'], categories=standard_path_activities, ordered=True)
-    df_result = df_filtered.sort_values('order').drop(columns=['order'])
+    if start_time_col not in df.columns:
+        for col in possible_start_cols:
+            if col in df.columns:
+                rename_map[col] = start_time_col
+                break
 
-    df_result['average_time_minutes'] = df_result['Average Time (Duration)'].dt.total_seconds() / 60
+    if complete_time_col not in df.columns:
+        for col in possible_end_cols:
+            if col in df.columns:
+                rename_map[col] = complete_time_col
+                break
 
-    df_result['serial_number'] = range(len(df_result))
-    df_result.rename(columns={'activity': 'activity_name'}, inplace=True)
+    # Normalize case_id
+    if case_id_col not in df.columns:
+        possible_case_cols = ["case_id", "Case ID", "case", "process_id"]
+        for col in possible_case_cols:
+            if col in df.columns:
+                rename_map[col] = case_id_col
+                break
 
-    df_final = df_result[['serial_number', 'activity_name', 'average_time_minutes']].copy()
-    df_final['average_time_minutes'] = df_final['average_time_minutes'].round(2)
+    df.rename(columns=rename_map, inplace=True)
 
-    json_output = df_final.to_dict('records')    
-    
-    return (json.dumps(json_output, indent=4))
+    # --- Validate required columns ---
+    required = [case_id_col, activity_col, start_time_col, complete_time_col]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}. Columns found: {list(df.columns)}")
 
+    # --- Calculate durations ---
+    df[start_time_col] = pd.to_datetime(df[start_time_col])
+    df[complete_time_col] = pd.to_datetime(df[complete_time_col])
+    df["duration"] = df[complete_time_col] - df[start_time_col]
+
+    # --- Find Most Frequent Path ---
+    df_paths = df.groupby(case_id_col)[activity_col].apply(lambda x: " -> ".join(x)).reset_index()
+    df_variants = df_paths[activity_col].value_counts().reset_index()
+    df_variants.columns = ["Process Path (Variant)", "Frequency"]
+
+    most_standard_path_string = (
+        df_variants.sort_values(by="Frequency", ascending=False)
+        .iloc[0]["Process Path (Variant)"]
+    )
+    standard_path_activities = [a.strip() for a in most_standard_path_string.split("->")]
+
+    # --- Average Duration Per Step ---
+    df_avg_time = df.groupby(activity_col)["duration"].mean().reset_index()
+    df_avg_time.rename(columns={"duration": "Average Time (Duration)"}, inplace=True)
+
+    df_filtered = df_avg_time[df_avg_time[activity_col].isin(standard_path_activities)].copy()
+    df_filtered["order"] = pd.Categorical(
+        df_filtered[activity_col],
+        categories=standard_path_activities,
+        ordered=True,
+    )
+    df_result = df_filtered.sort_values("order").drop(columns=["order"])
+
+    # --- Convert to minutes ---
+    df_result["average_time_minutes"] = (
+        df_result["Average Time (Duration)"].dt.total_seconds() / 60
+    ).round(2)
+    df_result["serial_number"] = range(1, len(df_result) + 1)
+    df_result.rename(columns={activity_col: "activity_name"}, inplace=True)
+
+    # --- Final Output ---
+    df_final = df_result[["serial_number", "activity_name", "average_time_minutes"]].copy()
+    json_output = df_final.to_dict("records")
+
+    return json.dumps(json_output, indent=4)
 
 
 import pandas as pd
@@ -1911,52 +1973,44 @@ def analyze_and_structure_process_datas(
     activity_col='activity_name', 
     start_time_col='start_time', 
     complete_time_col='complete_time',
-    bottleneck_top_n=3 # This parameter is now deprecated, using overall average instead
+    bottleneck_top_n=3,
+    project=None  # 👈 NEW (optional, used for pulling cost data)
 ):
     """
     Calculates key process mining metrics and structures the output into a global
-    metrics summary and an annotated process flow node list, based on the Most 
-    Frequent Path and enhanced loop detection logic.
+    metrics summary and an annotated process flow node list.
+    Integrates user-defined cost data (CostPerProcess) if available for the project.
     """
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
     
     try:
         df = pd.DataFrame(event_log_data)
-        
-        # 1. Prepare Data and Calculate Event/Case Durations
+
+        # --- 1. Prepare Data and Calculate Durations ---
         df[start_time_col] = pd.to_datetime(df[start_time_col], utc=True)
         df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
-        
-        # Calculate the duration of each activity event (processing time)
-        df['Event_Duration_Seconds'] = (
-            df[complete_time_col] - df[start_time_col]
-        ).dt.total_seconds()
-        
+        df['Event_Duration_Seconds'] = (df[complete_time_col] - df[start_time_col]).dt.total_seconds()
         df['duration'] = df[complete_time_col] - df[start_time_col]
         overall_avg_duration = df['duration'].mean()
 
-        # Calculate case cycle times (Required for global metrics)
+        # --- Case cycle times ---
         case_start = df.groupby(case_id_col)[start_time_col].min().rename('Case_Start')
         case_end = df.groupby(case_id_col)[complete_time_col].max().rename('Case_End')
         df_cycle_times = pd.merge(case_start, case_end, on=case_id_col).reset_index()
-        
-        df_cycle_times['Cycle_Time_Seconds'] = (
-            df_cycle_times['Case_End'] - df_cycle_times['Case_Start']
-        ).dt.total_seconds()
-        
-        # --- 2. Calculate GLOBAL METRICS ---
-        
+        df_cycle_times['Cycle_Time_Seconds'] = (df_cycle_times['Case_End'] - df_cycle_times['Case_Start']).dt.total_seconds()
+
+        # --- 2. Global Metrics ---
         total_cases = df_cycle_times[case_id_col].nunique()
         avg_cycle_time_sec = df_cycle_times['Cycle_Time_Seconds'].mean()
         med_cycle_time_sec = df_cycle_times['Cycle_Time_Seconds'].median()
         min_cycle_time_sec = df_cycle_times['Cycle_Time_Seconds'].min()
         max_cycle_time_sec = df_cycle_times['Cycle_Time_Seconds'].max()
-        
+
         time_span_days = (df[complete_time_col].max() - df[start_time_col].min()).total_seconds() / (3600 * 24)
         throughput_rate = total_cases / time_span_days if time_span_days > 0 else 0
         max_steps_count = df.groupby(case_id_col).size().max()
-        
+
         df_sequences = df.sort_values(by=[case_id_col, start_time_col]).groupby(case_id_col)[activity_col].apply(lambda x: tuple(x.tolist()))
         variant_counts = df_sequences.value_counts()
         total_variants = len(variant_counts)
@@ -1964,27 +2018,22 @@ def analyze_and_structure_process_datas(
             {"sequence": list(variant), "count": int(count), "percentage": round((count / total_cases) * 100, 2)}
             for variant, count in variant_counts.nlargest(5).items()
         ]
-        
-        # --- 3. Determine Actual Path and Activity-Level Metrics (ENHANCED LOGIC) ---
-        
-        # 3a. Determine Most Frequent Path
+
+        # --- 3. Activity-Level Metrics ---
         df_paths = df.groupby(case_id_col)[activity_col].apply(lambda x: ' -> '.join(x)).reset_index(name='Process Path (Variant)')
         df_variants = df_paths['Process Path (Variant)'].value_counts().reset_index()
-        most_standard_path_string = df_variants.sort_values(by='count', ascending=False).iloc[0]['Process Path (Variant)']
+        most_standard_path_string = df_variants.iloc[0]['Process Path (Variant)']
         standard_activities = [a.strip() for a in most_standard_path_string.split('->')]
 
-        # 3b. Create master list of all unique activities and assign IDs
         all_activities_df = pd.DataFrame(df[activity_col].unique(), columns=['label'])
         all_activities_df['id'] = (all_activities_df.index + 1).astype(str)
         activity_to_id_map = all_activities_df.set_index('label')['id'].to_dict()
-        
-        # 3c. Calculate DFG and Rework flags
+
         df['Next Activity'] = df.groupby(case_id_col)[activity_col].shift(-1)
         df_transitions = df.dropna(subset=['Next Activity']).copy()
-
         df_dfg = df_transitions.groupby([activity_col, 'Next Activity']).size().reset_index(name='count')
         df_dfg.columns = ['Source', 'Target', 'Frequency']
-        
+
         df_activity_counts = df.groupby([case_id_col, activity_col]).size().reset_index(name='count')
         rework_activities = set(df_activity_counts[df_activity_counts['count'] > 1][activity_col].unique())
 
@@ -1992,21 +2041,29 @@ def analyze_and_structure_process_datas(
             avg_duration=('duration', 'mean'),
             total_count=(activity_col, 'size')
         ).reset_index()
-        
+
         df_avg_time_raw['hasLoop'] = df_avg_time_raw[activity_col].apply(lambda x: x in rework_activities)
         df_avg_time_raw['isBottleneck'] = df_avg_time_raw['avg_duration'] > overall_avg_duration
 
-        # 3d. Dropout identification
         df_last_activities = df.groupby(case_id_col)[activity_col].last()
-        expected_end_activity = df_last_activities.mode().iloc[0] 
+        expected_end_activity = df_last_activities.mode().iloc[0]
         dropout_counts = df_last_activities[df_last_activities != expected_end_activity].value_counts()
-        major_dropout_points = set(dropout_counts.index[:5]) 
+        major_dropout_points = set(dropout_counts.index[:5])
         df_avg_time_raw['isDropout'] = df_avg_time_raw[activity_col].apply(lambda x: x in major_dropout_points)
 
+        # --- 4. Cost Integration (NEW) ---
+        cost_map = {}
+        if project:
+            try:
+                cost_map = {c.activity_name: float(c.cost_per_h) for c in CostPerProcess.objects.filter(project=project)}
+            except Exception as e:
+                print(f"⚠️ Cost mapping failed: {e}")
 
-        # --- 4. Loop Connection Logic ---
-        
-        # Define the connection logic based on the DFG
+        df_avg_time_raw['cost_per_h'] = df_avg_time_raw[activity_col].map(cost_map).fillna(0.0)
+        df_avg_time_raw['avg_duration_h'] = df_avg_time_raw['avg_duration'].dt.total_seconds() / 3600.0
+        df_avg_time_raw['estimated_cost'] = df_avg_time_raw['avg_duration_h'] * df_avg_time_raw['cost_per_h']
+
+        # --- 5. Loop Connection Logic ---
         def get_loop_connections(row):
             activity = row['label']
             if not row['hasLoop']: 
@@ -2018,133 +2075,98 @@ def analyze_and_structure_process_datas(
 
             df_outbound = df_dfg[df_dfg['Source'] == activity].sort_values(by='Frequency', ascending=False)
             valid_backward_targets = {}
-            
-            # PHASE 1: FIND BACKWARD LOOPS (Highest Priority)
+
             for _, transition in df_outbound.iterrows():
                 target = transition['Target']
                 target_id = activity_to_id_map.get(target)
-
                 if target_id is None:
                     continue
-
-                # 1. Self-loop (Highest Priority)
                 if target == activity:
                     return {"from": current_id, "to": target_id}
-                
-                # 2. Backward loop (Target ID < Current ID)
                 if int(target_id) < int(current_id):
-                     valid_backward_targets[target_id] = transition['Frequency']
-            
-            # Return the shortest backward loop (MAXIMUM valid target ID) if found
+                    valid_backward_targets[target_id] = transition['Frequency']
+
             if valid_backward_targets:
                 best_target_id = max(valid_backward_targets.keys(), key=int)
                 return {"from": current_id, "to": best_target_id}
 
-            # PHASE 2: FALLBACK TO FORWARD SKIP
             if not df_outbound.empty:
                 most_frequent_transition = df_outbound.iloc[0]
                 target = most_frequent_transition['Target']
                 target_id = activity_to_id_map.get(target)
-                
-                if target_id is not None and target_id != current_id:
+                if target_id and target_id != current_id:
                     return {"from": current_id, "to": target_id}
-
             return None
 
-
-        # --- 5. Structure Output: Process Flow Nodes (Filtered to Standard Path) ---
-        
-        # Merge metrics and IDs into a master DataFrame filtered by the standard path
+        # --- 6. Process Flow Nodes ---
         df_master = pd.DataFrame(standard_activities, columns=['label'])
         df_master = df_master.merge(df_avg_time_raw, left_on='label', right_on=activity_col, how='left')
-        
         df_ids_to_merge = all_activities_df[['label', 'id']].rename(columns={'id': 'activity_id'})
         df_master = df_master.merge(df_ids_to_merge, on='label', how='left')
-        
+
         df_master['id'] = df_master['activity_id']
-        # Convert Timedelta to float (seconds/minutes), operating on the Series level which is safer
         df_master['value'] = df_master['avg_duration'].dt.total_seconds().fillna(0) / 60
         df_master['value'] = df_master['value'].round(2).astype(str)
-        
-        # Apply the new loop connection logic
-        df_master['loopConnections'] = df_master.apply(
-            lambda row: get_loop_connections({'label': row['label'], 'hasLoop': row['hasLoop']}), 
-            axis=1
-        )
-
-        # Set final node properties
+        df_master['loopConnections'] = df_master.apply(lambda row: get_loop_connections({'label': row['label'], 'hasLoop': row['hasLoop']}), axis=1)
         df_master['status'] = np.where(df_master['label'] == expected_end_activity, 'final', 'in-progress')
-        df_master['owner'] = "N/A" # Resource information requires another column
-        
-        # Safely extract total_seconds() using pd.notna() to prevent Timedelta errors
+        df_master['owner'] = "N/A"
+
         df_master['descriptions'] = df_master.apply(
             lambda row: [
-                # Safely handle total_count (which might be NaN if an activity is in the path but missing from log)
                 f"Activity occurs {int(row['total_count'])} times." if pd.notna(row['total_count']) else "Activity count: 0.",
-                
-                # Use conditional logic to check if avg_duration is a valid Timedelta before calling .total_seconds()
-                f"Average processing time: {seconds_to_dhms(row['avg_duration'].total_seconds() if pd.notna(row['avg_duration']) else 0)}"
-            ], 
+                f"Average processing time: {seconds_to_dhms(row['avg_duration'].total_seconds() if pd.notna(row['avg_duration']) else 0)}",
+                f"Cost per hour: {row['cost_per_h']}",
+                f"Estimated cost per case: {round(row['estimated_cost'], 2)}"
+            ],
             axis=1
         )
-        
-        # Dropping the original columns that contain Timedelta ('avg_duration') or are redundant
+
         cols_to_drop = [activity_col, 'avg_duration', 'total_count', 'activity_id']
         df_master.drop(columns=cols_to_drop, inplace=True, errors='ignore')
-        
-        final_cols = ['id', 'label', 'value', 'status', 'owner', 'descriptions', 'isBottleneck', 'hasLoop', 'isDropout', 'loopConnections', 'extras']
-        
-        # Filter to required columns and convert
-        process_flow_nodes = df_master.rename(columns={'label': 'label'}).replace({np.nan: None, None: None}).to_dict('records')
 
-        # Ensure all required keys exist and handle None values for lists/dicts
+        process_flow_nodes = df_master.rename(columns={'label': 'label'}).replace({np.nan: None, None: None}).to_dict('records')
         for node in process_flow_nodes:
-            # Set default values for missing keys in the new structure
             node['owner'] = node.get('owner', 'N/A')
             node['extras'] = node.get('extras', [])
-            
         
-        # --- 6. Final JSON Output ---
-
+        # --- 7. Final Output ---
+        total_process_cost = round(df_avg_time_raw['estimated_cost'].sum(), 2)
         final_output = {
             "global_metrics": {
                 "Total_Completed_Cases": int(total_cases),
                 "Case_Throughput_Rate_Per_Day": round(throughput_rate, 2),
                 "Max_Steps_in_a_Case": int(max_steps_count),
-                "Most_Frequent_Path": most_standard_path_string, # Added for context
-                
+                "Most_Frequent_Path": most_standard_path_string,
                 "Cycle_Time": {
                     "Average": seconds_to_dhms(avg_cycle_time_sec),
                     "Median": seconds_to_dhms(med_cycle_time_sec),
                     "Min": seconds_to_dhms(min_cycle_time_sec),
                     "Max": seconds_to_dhms(max_cycle_time_sec),
                 },
-                
                 "Variant_Analysis": {
                     "Total_Number_of_Process_Variants": int(total_variants),
                     "Top_5_Process_Variants": top_5_variants
                 },
-                
                 "Rework_Analysis_Simplified": {
                     "Activities_In_Loops_Count": len(rework_activities),
                     "Time_Lost_Simplified_Basis": "Loop/Rework analysis is now embedded in 'process_flow_nodes' loopConnections.",
                 },
-                
                 "Bottleneck_Analysis_Simplified": {
                     "Bottlenecks_Based_on_Avg_Duration_Count": len(df_master[df_master['isBottleneck']]),
                     "Time_Lost_Simplified_Basis": "Bottlenecks flagged if avg duration > overall log avg duration.",
+                },
+                "Cost_Analysis": {  # 👈 NEW but safely nested
+                    "Total_Process_Cost": total_process_cost,
+                    "Currency": "USD"
                 }
             },
-            
             "process_flow_nodes": process_flow_nodes
         }
-        
+
         return json.dumps(final_output, indent=4)
 
     except Exception as e:
         return json.dumps({"Error": f"An error occurred during process analysis: {e}"}, indent=4)
-    
-
 
 import pandas as pd
 import json
@@ -2754,6 +2776,94 @@ def calculate_happy_path_compliance_rate(event_log_data, case_id_col, activity_c
         "compliant_cases": compliant_cases,
         "non_compliant_cases": total_cases - compliant_cases,
         "happy_path_reference": " -> ".join(happy_sequence)
+    }
+
+    return json.dumps(result, indent=4)
+
+
+import random
+
+
+
+
+def simulate_actual_process(event_log_data, case_id_col, activity_col, start_col, end_col,
+                            n_simulations=1000, variation=0.2):
+    """
+    Monte Carlo simulation based on ACTUAL paths in the event log.
+
+    Each simulation randomly picks an existing real variant,
+    then perturbs its activity durations by ±variation%.
+    """
+
+    df = pd.DataFrame(event_log_data)
+    df[start_col] = pd.to_datetime(df[start_col], errors="coerce", utc=True)
+    df[end_col] = pd.to_datetime(df[end_col], errors="coerce", utc=True)
+
+    # Calculate actual durations
+    df["duration_hr"] = (df[end_col] - df[start_col]).dt.total_seconds() / 3600
+
+    # Average duration per activity
+    avg_duration = df.groupby(activity_col)["duration_hr"].mean().to_dict()
+
+    # --- Step 1: Build actual case paths (variants)
+    case_paths = (
+        df.groupby(case_id_col)[activity_col]
+        .apply(list)
+        .reset_index(name="path")
+    )
+
+    # Build list of unique paths with frequency
+    path_counts = case_paths["path"].value_counts().reset_index()
+    path_counts.columns = ["path", "count"]
+    total_cases = len(case_paths)
+
+    # Convert to list of (path, weight)
+    variants = [(row["path"], row["count"] / total_cases) for _, row in path_counts.iterrows()]
+
+    simulated_cases = []
+
+    # --- Step 2: Run simulations
+    for i in range(n_simulations):
+        # Randomly select a variant (weighted by its frequency)
+        variant, _ = random.choices(variants, weights=[w for _, w in variants])[0]
+
+        total_time = 0.0
+        total_cost = 0.0
+        steps = []
+
+        for act in variant:
+            mean_dur = avg_duration.get(act, np.mean(list(avg_duration.values())))
+            dur = random.uniform(mean_dur * (1 - variation), mean_dur * (1 + variation))
+            cost = dur * 50  # $50/hr placeholder; can map actual costs later
+            total_time += dur
+            total_cost += cost
+            steps.append({
+                "activity": act,
+                "sim_duration_hr": round(dur, 2),
+                "sim_cost": round(cost, 2)
+            })
+
+        simulated_cases.append({
+            "case_id": f"Sim_{i+1}",
+            "total_time_hr": round(total_time, 2),
+            "total_cost": round(total_cost, 2),
+            "steps": steps
+        })
+
+    # --- Step 3: Aggregate results
+    total_times = [c["total_time_hr"] for c in simulated_cases]
+    total_costs = [c["total_cost"] for c in simulated_cases]
+
+    result = {
+        "simulation_type": "actual_path",
+        "simulation_runs": n_simulations,
+        "avg_cycle_time_hr": round(np.mean(total_times), 2),
+        "min_cycle_time_hr": round(np.min(total_times), 2),
+        "max_cycle_time_hr": round(np.max(total_times), 2),
+        "avg_cost_per_case": round(np.mean(total_costs), 2),
+        "variation_factor": variation,
+        "sample_simulated_cases": simulated_cases[:5],
+        "total_unique_variants": len(variants)
     }
 
     return json.dumps(result, indent=4)

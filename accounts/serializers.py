@@ -14,7 +14,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            'id', 'first_name', 'last_name', 'username', 'email', 'password', 'gender', 'profession',
+            'id', 'first_name', 'last_name', 'username', 'email', 'password', 'gender', 'profession', 'company_name',
             'date_of_birth', 'age', 'profile_picture', 'phone_number', 'location', 'country',
             'time_zone', 'upload_logo', 'about_yourself', 'professional_background', 'created_at', 'is_subscribed', 'subsciption_expires_on',
             'subscription_status'

@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from rest_framework import viewsets, permissions
 from django.contrib.auth.models import User
-from .models import Department, Team, Project, DefineColumns, HappyPath, kpiList, kpiDashboard, ProcessVariant
+from .models import Department, Team, Project, DefineColumns, HappyPath, kpiList, kpiDashboard, ProcessVariant, CostPerProcess
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -15,7 +15,8 @@ from .serializers import (
     HappyPathSerializer,
     KpiListSerializer,
     KpiDashboardSerializer,
-    ProcessVariantSerializer
+    ProcessVariantSerializer,
+    CostPerProcessSerializer
 
 )
 from .utils import *
@@ -25,6 +26,7 @@ from rest_framework.response import Response
 import json
 from .fil import *
 import re 
+import os
 # from .filter import filter_event_log_pre_kpi
 
 
@@ -154,16 +156,40 @@ def get_columns(request, pk=None):
         return Response({"error": str(e)}, status=500)
     
 
+def normalize_timestamps(file_path, save_clean_copy=False):
     
+    df = pd.read_csv(file_path)
+
+    
+    timestamp_cols = [
+        col for col in df.columns if 'time' in col.lower() or 'date' in col.lower()
+    ]
+
+    for col in timestamp_cols:
+        df[col] = (
+            pd.to_datetime(df[col], errors='coerce')
+            .dt.tz_localize(None)
+            .dt.strftime('%Y-%m-%d %H:%M:%S')
+        )
+
+    if save_clean_copy:
+        new_path = file_path.replace(".csv", "_cleaned.csv")
+        df.to_csv(new_path, index=False)
+        return new_path
+    else:
+        df.to_csv(file_path, index=False)
+        return file_path
+
+
+# === Main View ===
 @api_view(['GET', 'POST', 'PATCH', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def project_api_view(request, pk=None):
     
+    # --- GET (List or Detail) ---
     if request.method == 'GET':
         if pk is not None:
-            # DETAIL VIEW: Retrieve a single project
             try:
-                # Retrieve the project, ensuring it belongs to the requesting user
                 project = Project.objects.get(pk=pk, user=request.user)
                 serializer = ProjectSerializer(project)
                 return Response(serializer.data)
@@ -173,82 +199,61 @@ def project_api_view(request, pk=None):
                     status=status.HTTP_404_NOT_FOUND
                 )
         else:
-            # LIST VIEW: Retrieve all projects for the authenticated user
             projects = Project.objects.filter(user=request.user).order_by('-created_at')
             serializer = ProjectSerializer(projects, many=True)
             return Response(serializer.data)
 
-    # --- CREATE (POST) ---
+    # --- POST (Create) ---
     elif request.method == 'POST':
-       
         data = request.data        
         related_project_id = data.get('related_project')
 
-        if related_project_id:
-            related_data = data.pop('related_project', None) # <--- This line is problematic if 'related_project' is defined on the serializer
-            serializer = ProjectSerializer(data=request.data)   
-            if serializer.is_valid():              
-                new_project = serializer.save(user=request.user, is_related=True) # Save the new project
-                
-                # Update the parent project's 'related_project' field
+        serializer = ProjectSerializer(data=request.data)
+        if serializer.is_valid():
+            new_project = serializer.save(user=request.user, is_related=bool(related_project_id))
+
+            # Normalize timestamps after saving the file
+            try:
+                if new_project.csv_file and os.path.exists(new_project.csv_file.path):
+                    normalize_timestamps(new_project.csv_file.path)
+            except Exception as e:
+                print(f"⚠️ Timestamp normalization failed: {e}")
+
+            # Handle related project linking
+            if related_project_id:
                 try:
-                    parent_project = Project.objects.get(
-                        pk=related_project_id,
-                        user=request.user
-                    ) 
-                    
+                    parent_project = Project.objects.get(pk=related_project_id, user=request.user)
                     parent_project.related_project = new_project
                     parent_project.save()
-                   
-                    
-                    return Response(serializer.data, status=status.HTTP_201_CREATED) # <--- ADDED RETURN HERE
-                    
                 except Project.DoesNotExist:
-                    # Handle case where the specified related_project doesn't exist for the user
                     return Response(
                         {"related_project": "The specified related project was not found or does not belong to you."},
                         status=status.HTTP_400_BAD_REQUEST
                     )
-                
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST) # <--- ADDED RETURN HERE
-        
-        # ... (existing code for when related_project_id is NOT present)
-        else:
-            serializer = ProjectSerializer(data=request.data)
-            if serializer.is_valid():
-                serializer.save(user=request.user)
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
-            # You should also add a return for invalid data here
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST) # <--- ADDED RETURN HERE
 
-    
-    # --- UPDATE (PATCH) ---
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        else:
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # --- PATCH (Update) ---
     elif request.method == 'PATCH':
         if pk is None:
             return Response(
-                {"detail": "Method not allowed. PATCH requires a primary key (pk)."},
+                {"detail": "PATCH requires a project ID (pk)."},
                 status=status.HTTP_405_METHOD_NOT_ALLOWED
             )
-
-        try:
-            # Retrieve the project, ensuring it belongs to the requesting user
-            project = Project.objects.get(pk=pk, user=request.user)
-        except Project.DoesNotExist:
-            return Response(
-                {"detail": "Project not found or you do not have permission to edit it."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Use partial=True for PATCH to allow only a subset of fields
-        serializer = ProjectSerializer(
-            project,
-            data=request.data,
-            partial=True
-        )
-
+        project = get_object_or_404(Project, pk=pk, user=request.user)
+        serializer = ProjectSerializer(project, data=request.data, partial=True)
         if serializer.is_valid():
-            # Note: The user field is read_only, so attempting to change it will be ignored by DRF.
-            serializer.save()
+            updated_project = serializer.save()
+            
+            # Auto-normalize if CSV file updated
+            if 'csv_file' in request.data:
+                try:
+                    normalize_timestamps(updated_project.csv_file.path)
+                except Exception as e:
+                    print(f"⚠️ Timestamp normalization failed during update: {e}")
+            
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -256,93 +261,177 @@ def project_api_view(request, pk=None):
     elif request.method == 'DELETE':
         if pk is None:
             return Response(
-                {"detail": "Method not allowed. DELETE requires a primary key (pk)."},
+                {"detail": "DELETE requires a project ID (pk)."},
                 status=status.HTTP_405_METHOD_NOT_ALLOWED
             )
+        project = get_object_or_404(Project, pk=pk, user=request.user)
+        project.delete()
+        return Response({"detail": "Project deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
 
+    return Response({"detail": "Method not allowed."}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+
+
+@api_view(['GET', 'PATCH'])
+def happy_path(request, pk=None):   
+    try:
+        project = Project.objects.get(id=pk)
+    except Project.DoesNotExist:
+        return Response({"error": "No project found with this ID."}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # -------------------------
+    # 🔹 GET: Fetch all HappyPath records
+    # -------------------------
+    if request.method == 'GET':
         try:
-            # Retrieve the project, ensuring it belongs to the requesting user
-            project = Project.objects.get(pk=pk, user=request.user)
-            project.delete()
+            happy_paths = project.happypath_set.all().order_by('serial_number')
+            serializer = HappyPathSerializer(happy_paths, many=True)
+            
+            return Response({
+                "project_id": project.id,
+                "happy_paths": serializer.data
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # -------------------------
+    # 🔹 PATCH: Update existing HappyPath record(s)
+    # -------------------------
+    elif request.method == 'PATCH':
+        try:
+            record_id = request.data.get("id")
+            if not record_id:
+                return Response({"error": "Missing 'id' field for update."}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                happy_path_obj = HappyPath.objects.get(id=record_id, project=project)
+            except HappyPath.DoesNotExist:
+                return Response({"error": f"No HappyPath found with ID {record_id} for this project."}, status=status.HTTP_404_NOT_FOUND)
+
+            serializer = HappyPathSerializer(happy_path_obj, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({
+                    "message": "Happy path record updated successfully.",
+                    "data": serializer.data
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    "error": "Invalid data provided.",
+                    "details": serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+@api_view(['GET', 'POST'])
+def cost_per_process_list_create(request, pk=None):
+    """
+    GET: Retrieve one or more CostPerProcess records (filtered by user/project/pk)
+    POST: Create one or more CostPerProcess records
+    """
+    if request.method == 'GET':
+        # Build filters dynamically
+        filters = {'project__user': request.user}
+        if pk is not None:
+            filters['project__id'] = pk  # project id, not model pk
+
+        # Apply filters correctly
+        costs = CostPerProcess.objects.filter(**filters)
+
+        if not costs.exists():
             return Response(
-                {"detail": "Project deleted successfully."},
-                status=status.HTTP_204_NO_CONTENT
-            )
-        except Project.DoesNotExist:
-            return Response(
-                {"detail": "Project not found or you do not have permission to delete it."},
+                {"detail": "No cost per process data found matching the criteria."},
                 status=status.HTTP_404_NOT_FOUND
             )
 
-    return Response(
-        {"detail": "Method not allowed."},
-        status=status.HTTP_405_METHOD_NOT_ALLOWED
-    )
+        serializer = CostPerProcessSerializer(costs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
-
-
-
-@api_view(['GET', 'POST'])
-def happy_path(request, pk=None):   
-    
-    if request.method == 'GET':
-        try:
-            project = Project.objects.get(id=pk)
-            ideal_paths = project.happypath_set.all().order_by('serial_number')
-            
-            # Serialize the data
-            serializer = HappyPathSerializer(ideal_paths, many=True)
-            
-            return Response({
-                "project_id": project.id,                
-                "happy_paths": serializer.data
-            })
-        except Project.DoesNotExist:
-            return Response({"error": "No project found with this ID."}, status=404)
-        except Exception as e:
-            return Response({"error": str(e)}, status=500)
-    
     elif request.method == 'POST':
-        try:
-            serializer = HappyPathSerializer(data=request.data)
-            
-            if serializer.is_valid():
-                ideal_path = serializer.save()
-                return Response({
-                    "message": "Ideal path added successfully.",
-                    "ideal_path_id": ideal_path.id,
-                    "data": serializer.data
-                }, status=201)
-            else:
-                return Response({
-                    "error": "Invalid data",
-                    "details": serializer.errors
-                }, status=400)
-                
-        except Project.DoesNotExist:
-            return Response({"error": "No project found with the provided ID."}, status=404)
-        except Exception as e:
-            return Response({"error": str(e)}, status=500)
-        
-
-import json
+        # Allow batch creation
+        serializer = CostPerProcessSerializer(data=request.data, many=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         
 @api_view(['GET'])
 def get_ideal_paths(request, pk=None):
     try:
+        # 1️⃣ Get the project
         project = Project.objects.get(id=pk)
-        ideal_path_json = analyze_standard_path_performance_json(file_path=project.csv_file.path)
-        ideal_path_data = json.loads(ideal_path_json)  # Parse the JSON string        
-        
+
+        # 2️⃣ Get the column definitions (user-defined mapping)
+        try:
+            columns = DefineColumns.objects.get(project=project)
+        except DefineColumns.DoesNotExist:
+            return Response(
+                {"error": "DefineColumns not found for this project."},
+                status=400
+            )
+
+        # 3️⃣ Generate the ideal path using dynamic columns
+        ideal_path_json = analyze_standard_path_performance_json(
+            file_path=project.csv_file.path,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity,
+            start_time_col=columns.timestamp_start,
+            complete_time_col=columns.timestamp_end
+        )
+
+        ideal_path_data = json.loads(ideal_path_json)
+
+        # 4️⃣ Clear any existing HappyPath records for this project
+        HappyPath.objects.filter(project=project).delete()
+
+        # 5️⃣ Save each step into HappyPath
+        saved_records = []
+        for idx, step in enumerate(ideal_path_data, start=1):
+            happy_obj = HappyPath.objects.create(
+                project=project,
+                serial_number=int(step.get("serial_number", idx)),
+                activity_name=step.get("activity_name", "Unknown Activity"),
+                average_time_minutes=step.get("average_time_minutes", 0),
+                cost=None  # Cost can be linked later if CostPerProcess exists
+            )
+
+            saved_records.append({
+                "serial_number": happy_obj.serial_number,
+                "activity_name": happy_obj.activity_name,
+                "average_time_minutes": float(happy_obj.average_time_minutes),
+                "cost": happy_obj.cost
+            })
+
+        # 6️⃣ Return success response
         return Response({
-            "ideal_path": ideal_path_data
-        })
+            "message": "Ideal path generated and saved successfully in HappyPath table.",
+            "project_id": project.id,
+            "ideal_path": ideal_path_data,
+            "saved_steps": saved_records
+        }, status=200)
+
     except Project.DoesNotExist:
-        return Response({"error": "No project found with this ID."}, status=404)
+        return Response(
+            {"error": "No project found with this ID."},
+            status=404
+        )
+    except ValueError as ve:
+        # This captures missing or mismatched column errors from the analyzer
+        return Response(
+            {"error": f"Column mismatch: {str(ve)}"},
+            status=400
+        )
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response({"error": str(e)}, status=500)
-        
 
 
 @api_view(['GET'])
@@ -2064,7 +2153,8 @@ def actual_path_data_with(request, pk=None):
             columns.case_id,
             columns.activity,
             columns.timestamp_start,
-            columns.timestamp_end
+            columns.timestamp_end,
+            project=project,
         )
         result_data = json.loads(result)
 
@@ -2399,3 +2489,127 @@ def happy_path_compliance_view(request, pk=None):
         import traceback
         traceback.print_exc()
         return Response({"error": str(e)}, status=500)
+    
+
+
+
+@api_view(['POST'])
+def simulate_actual_path_view(request, pk=None):
+    text = request.data.get('text', {})
+    id = request.data.get('project_id', None)
+    print("Received data for simulation:", text)
+    print("Received id:", id)
+    if not id or not text:        
+        return Response({"error": "ID & TEXT are required in the request body."}, status=400)
+    
+    try:
+        project = Project.objects.get(pk=id)
+        if project.user != request.user:
+            return Response({"error": "Permission denied"}, status=403)
+
+        columns = DefineColumns.objects.get(project=project)
+        df = pd.read_csv(project.csv_file.path)
+        event_log_data = df.to_dict("records")
+
+        n_sim = int(request.query_params.get("n", 500))
+        variation = float(request.query_params.get("variation", 0.2))
+
+        
+        result_json = simulate_actual_process(
+            event_log_data,
+            case_id_col=columns.case_id,
+            activity_col=columns.activity,
+            start_col=columns.timestamp_start,
+            end_col=columns.timestamp_end,
+            n_simulations=n_sim,
+            variation=variation
+        )
+
+        return Response(json.loads(result_json), status=200)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"error": str(e)}, status=500)
+    
+
+
+from django.http import FileResponse
+from .reports import generate_kpi_benchmark_pdf
+
+
+
+@api_view(['POST'])
+def export_kpi_benchmark_pdf(request, pk=None):
+    """
+    Endpoint to export KPI Benchmark JSON into a styled PDF.
+    Example frontend call: POST /api/project/export-benchmark-pdf/
+    """
+    try:
+        data = request.data  # Expect JSON payload like your KPI summary
+
+        pdf_buffer = generate_kpi_benchmark_pdf(data)
+        response = FileResponse(pdf_buffer, as_attachment=True, filename="Process_Benchmark_Report.pdf")
+        return response
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"error": str(e)}, status=500)
+ 
+from .simulation import simulate_process_analysis
+from django.shortcuts import get_object_or_404
+from .ai import parse_process_intent
+
+
+@api_view(['POST'])
+def simulate_process_view(request, pk):
+    """
+    POST: Simulate process improvement for a project.
+    Accepts JSON body parameters like:
+    {
+        "remove_bottlenecks": true,
+        "remove_loops": false,
+        "remove_dropouts": true,
+        "target_activity": "Payment Monitoring"
+    }
+    """
+    try:
+        # ---- 1. Get project ----
+        project = get_object_or_404(Project, pk=pk, user=request.user)
+
+        # ---- 2. Extract simulation parameters from request body ----
+        remove_bottlenecks = request.data.get("remove_bottlenecks", False)
+        remove_loops = request.data.get("remove_loops", False)
+        remove_dropouts = request.data.get("remove_dropouts", False)
+        target_activity = request.data.get("target_activity")
+
+        data = parse_process_intent('remove_bottlenecks from the payment monitoring process ')
+        print("Parsed process intent data:", data)
+        # ---- 3. Run simulation ----
+        simulated_result = simulate_process_analysis(
+            project=project,
+            remove_bottlenecks=remove_bottlenecks,
+            remove_loops=remove_loops,
+            remove_dropouts=remove_dropouts,
+            target_activity=target_activity
+        )
+
+        # ---- 4. Return simulation result ----
+        return Response(
+            {
+                "message": "Process simulation completed successfully.",
+                "project_id": project.id,
+                "process_name": project.process,
+                "simulation_result": simulated_result
+            },
+            status=status.HTTP_200_OK
+        )
+
+    except Project.DoesNotExist:
+        return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+    except DefineColumns.DoesNotExist:
+        return Response({"error": "Column mapping not defined for this project."}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
