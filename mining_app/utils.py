@@ -2816,7 +2816,7 @@ from datetime import timedelta
 
 # --- Helper Function for Formatting Time ---
 def seconds_to_dhms(seconds):
-    """Converts a total number of seconds into a days, hours, minutes, seconds string."""
+    
     seconds = abs(seconds)
     days = math.floor(seconds / (3600 * 24))
     seconds %= (3600 * 24)
@@ -2905,11 +2905,7 @@ def detect_dropouts(df, activity_col, case_id_col, ideal_positions):
 
 
 def detect_bottlenecks(activity_metrics, ideal_times, activity_col, threshold_sec: int = 3600):
-    """
-    Detect activities that take significantly longer than their ideal duration.
-    A bottleneck is flagged only if the delay (actual - ideal) > threshold_sec.
-    Default threshold: 3600 seconds (1 hour).
-    """
+    
     is_bottleneck_map = {}
     bottleneck_delta_map = {}
 
@@ -3511,82 +3507,82 @@ def simulate_actual_process(event_log_data, case_id_col, activity_col, start_col
 
 
 
-def generate_visual_process_flow_data(project, event_log_data):
-    """
-    Generates frontend-friendly process efficiency data
-    for graphical visualization (e.g. Sankey / flow diagram).
-    """
+# def generate_visual_process_flow_data(project, event_log_data):
+#     """
+#     Generates frontend-friendly process efficiency data
+#     for graphical visualization (e.g. Sankey / flow diagram).
+#     """
 
-    try:
-        result_json = analyze_and_structure_process(event_log_data)
-        result = json.loads(result_json)
+#     try:
+#         result_json = analyze_and_structure_process(event_log_data)
+#         result = json.loads(result_json)
 
-        # 🔍 Debug check: what’s inside the result
-        if isinstance(result, dict):
-            process_nodes = result.get("process_flow_nodes", [])
-        elif isinstance(result, list):
-            # Sometimes older versions returned list directly
-            process_nodes = result
-        else:
-            return json.dumps({"Error": "Unexpected data structure returned from analyzer."}, indent=4)
+#         # 🔍 Debug check: what’s inside the result
+#         if isinstance(result, dict):
+#             process_nodes = result.get("process_flow_nodes", [])
+#         elif isinstance(result, list):
+#             # Sometimes older versions returned list directly
+#             process_nodes = result
+#         else:
+#             return json.dumps({"Error": "Unexpected data structure returned from analyzer."}, indent=4)
 
-        if not process_nodes:
-            print("⚠️ No process_flow_nodes found. Full result:", json.dumps(result, indent=2))
-            return json.dumps([], indent=2)
+#         if not process_nodes:
+#             print("⚠️ No process_flow_nodes found. Full result:", json.dumps(result, indent=2))
+#             return json.dumps([], indent=2)
 
-        visual_data = []
-        seen_ids = set()
+#         visual_data = []
+#         seen_ids = set()
 
-        for node in process_nodes:
-            node_id = str(node.get("id", ""))
-            if not node_id or node_id in seen_ids:
-                continue
-            seen_ids.add(node_id)
+#         for node in process_nodes:
+#             node_id = str(node.get("id", ""))
+#             if not node_id or node_id in seen_ids:
+#                 continue
+#             seen_ids.add(node_id)
 
-            value_str = node.get("value", "0")
-            try:
-                value_float = float(value_str)
-                value_str = f"{value_float:.2f}"
-            except:
-                value_str = "0.00"
+#             value_str = node.get("value", "0")
+#             try:
+#                 value_float = float(value_str)
+#                 value_str = f"{value_float:.2f}"
+#             except:
+#                 value_str = "0.00"
 
-            visual_entry = {
-                "id": node_id,
-                "label": node.get("label", "Unknown"),
-                "value": value_str,
-                "status": node.get("status", "in-progress"),
-                "owner": node.get("owner", "Process Team"),
-                "descriptions": node.get("descriptions", []),
-                "isBottleneck": node.get("isBottleneck", False),
-                "hasLoop": node.get("hasLoop", False),
-                "isDropout": node.get("isDropout", False),
-            }
+#             visual_entry = {
+#                 "id": node_id,
+#                 "label": node.get("label", "Unknown"),
+#                 "value": value_str,
+#                 "status": node.get("status", "in-progress"),
+#                 "owner": node.get("owner", "Process Team"),
+#                 "descriptions": node.get("descriptions", []),
+#                 "isBottleneck": node.get("isBottleneck", False),
+#                 "hasLoop": node.get("hasLoop", False),
+#                 "isDropout": node.get("isDropout", False),
+#             }
 
-            if node.get("loopConnections"):
-                visual_entry["loopConnections"] = node["loopConnections"]
+#             if node.get("loopConnections"):
+#                 visual_entry["loopConnections"] = node["loopConnections"]
 
-            extras = []
-            if node.get("isBottleneck"):
-                extras.append({
-                    "id": f"{node_id}a",
-                    "label": f"{node.get('label')} Review",
-                    "position": "right"
-                })
-            if node.get("hasLoop"):
-                extras.append({
-                    "id": f"{node_id}b",
-                    "label": f"{node.get('label')} Rework",
-                    "position": "left",
-                    "hasLoop": True,
-                    "loopConnections": node.get("loopConnections", None)
-                })
+#             extras = []
+#             if node.get("isBottleneck"):
+#                 extras.append({
+#                     "id": f"{node_id}a",
+#                     "label": f"{node.get('label')} Review",
+#                     "position": "right"
+#                 })
+#             if node.get("hasLoop"):
+#                 extras.append({
+#                     "id": f"{node_id}b",
+#                     "label": f"{node.get('label')} Rework",
+#                     "position": "left",
+#                     "hasLoop": True,
+#                     "loopConnections": node.get("loopConnections", None)
+#                 })
 
-            visual_entry["extras"] = extras
-            visual_data.append(visual_entry)
+#             visual_entry["extras"] = extras
+#             visual_data.append(visual_entry)
 
-        return json.dumps(visual_data, indent=2)
+#         return json.dumps(visual_data, indent=2)
 
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return json.dumps({"Error": f"Failed to generate visual process flow: {e}"}, indent=4)
+#     except Exception as e:
+#         import traceback
+#         traceback.print_exc()
+#         return json.dumps({"Error": f"Failed to generate visual process flow: {e}"}, indent=4)

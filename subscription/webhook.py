@@ -6,23 +6,11 @@ from django.utils import timezone
 from datetime import timedelta
 from django.contrib.auth import get_user_model
 import os
-import json # Required for parsing plan_data
-
-# Ensure your CustomUser model is correctly imported
-# from accounts.models import CustomUser # Assuming CustomUser is here
-# For this example, we'll assume get_user_model() returns your CustomUser
+import json 
 User = get_user_model()
 
-# --- CONFIGURATION (Load from environment) ---
-# Assuming these environment variables are set
-# load_dotenv()
-# stripe.api_key = os.getenv("STRIPE_API_KEY")
-# STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
-# NOTE: For a runnable example, ensure stripe.api_key and STRIPE_WEBHOOK_SECRET are defined.
 
-# --- HELPER FUNCTIONS ---
 def handle_subscription_started(user_email, subscription_id, plan_data):
-    """Updates the CustomUser fields upon successful checkout completion."""
     try:
         user_profile = User.objects.get(email__iexact=user_email)
 
@@ -46,24 +34,23 @@ def handle_subscription_started(user_email, subscription_id, plan_data):
         user_profile.chatbot_inquiries = plan_data.get('chatbot_inq', 0)
 
         user_profile.save()
-        print(f"✅ Subscription activated for {user_email} ({user_profile.subsciption_plan_name}).")
+        print(f"Subscription activated for {user_email} ({user_profile.subsciption_plan_name}).")
 
     except User.DoesNotExist:
-        print(f"❌ No user found with email {user_email}.")
+        print(f"No user found with email {user_email}.")
     except Exception as e:
-        print(f"⚠️ Error handling subscription start for {user_email}: {e}")
+        print(f"Error handling subscription start for {user_email}: {e}")
 
 
 
 def handle_subscription_renewal(user_id, subscription_id, plan_data_str):
-    """Updates the CustomUser fields upon successful invoice payment."""
     try:
         user_profile = User.objects.get(pk=user_id)
 
         try:
             plan_data = json.loads(plan_data_str)
         except json.JSONDecodeError:
-            print(f"⚠️ Error parsing plan_data for renewal of user {user_id}. Using fallback.")
+            print(f"Error parsing plan_data for renewal of user {user_id}. Using fallback.")
             plan_data = {}
 
         duration_months = plan_data.get('duration_months') or 1
@@ -81,15 +68,14 @@ def handle_subscription_renewal(user_id, subscription_id, plan_data_str):
         user_profile.chatbot_inquiries = plan_data.get('chatbot_inq', user_profile.chatbot_inquiries)
 
         user_profile.save()
-        print(f"🔁 Subscription renewed for {user_profile.email} ({user_profile.subsciption_plan_name}).")
+        print(f"Subscription renewed for {user_profile.email} ({user_profile.subsciption_plan_name}).")
 
     except User.DoesNotExist:
-        print(f"❌ No user found with id {user_id}.")
+        print(f"No user found with id {user_id}.")
     except Exception as e:
-        print(f"⚠️ Error handling renewal for {user_id}: {e}")
+        print(f"Error handling renewal for {user_id}: {e}")
 
 def handle_failed_payment(user_id):
-    """Updates the CustomUser status upon payment failure."""
     try:
         user_profile = User.objects.get(pk=user_id)
 
@@ -107,31 +93,28 @@ def handle_failed_payment(user_id):
 
 
 def handle_subscription_deleted(user_id, subscription_id):
-    """Handles final deletion of a subscription (expired or canceled)."""
     try:
         user_profile = User.objects.get(pk=user_id)
 
         if user_profile.subscription_id != subscription_id:
-            print(f"⚠️ Subscription ID mismatch for user {user_id}. Stored: {user_profile.subscription_id}")
+            print(f"Subscription ID mismatch for user {user_id}. Stored: {user_profile.subscription_id}")
 
         user_profile.is_subscribed = False
         user_profile.subscription_status = 'expired'
         user_profile.subscription_id = None
         user_profile.subsciption_expires_on = timezone.now()
 
-        # ✅ Downgrade plan to 'free'
         user_profile.subsciption_plan_name = 'Free'
 
         user_profile.save()
-        print(f"🚫 Subscription expired for {user_profile.email}, reverted to Free plan.")
+        print(f"Subscription expired for {user_profile.email}, reverted to Free plan.")
 
     except User.DoesNotExist:
-        print(f"❌ No user found with id {user_id}.")
+        print(f"No user found with id {user_id}.")
     except Exception as e:
-        print(f"⚠️ Error handling subscription deletion for {user_id}: {e}")
+        print(f"Error handling subscription deletion for {user_id}: {e}")
 
 
-# --- WEBHOOK MAIN FUNCTION ---
 @csrf_exempt
 @require_http_methods(["POST"])
 def stripe_webhook(request):
@@ -139,7 +122,6 @@ def stripe_webhook(request):
     sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
     endpoint_secret = os.getenv("STRIPE_WEBHOOK_SECRET")    
 
-    # --- Verify and construct event ---
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
     except ValueError:
@@ -147,7 +129,6 @@ def stripe_webhook(request):
     except stripe.error.SignatureVerificationError:
         return HttpResponse('Invalid signature', status=400)
 
-    # --- Secure plan definitions (mirror of backend create_subscription_session) ---
     PLAN_MAP = {
         "small": {
             "plan_type": "small",
@@ -166,7 +147,6 @@ def stripe_webhook(request):
     event_type = event['type']
     data = event['data']['object']
 
-    # ✅ 1️⃣ CHECKOUT SESSION COMPLETED
     if event_type == 'checkout.session.completed':
         session = data
         subscription_id = session.get('subscription')
@@ -174,19 +154,16 @@ def stripe_webhook(request):
         plan_type = session['metadata'].get('plan_type')
 
         if not (user_email and subscription_id and plan_type):
-            print("⚠️ Missing email, plan_type, or subscription_id in session metadata.")
+            print("Missing email, plan_type, or subscription_id in session metadata.")
             return JsonResponse({'status': 'ignored'}, status=200)
 
-        # Ensure plan_type is valid
         plan_data = PLAN_MAP.get(plan_type)
         if not plan_data:
-            print(f"⚠️ Unknown plan_type '{plan_type}' in session metadata.")
+            print(f"Unknown plan_type '{plan_type}' in session metadata.")
             return JsonResponse({'status': 'ignored'}, status=200)
 
-        # A. Activate subscription
         handle_subscription_started(user_email, subscription_id, plan_data)
 
-        # B. Attach user_id + plan_type metadata to Stripe subscription
         try:
             user = User.objects.get(email__iexact=user_email)
             stripe.Subscription.modify(
@@ -197,16 +174,15 @@ def stripe_webhook(request):
                 }
             )
         except User.DoesNotExist:
-            print(f"❌ User {user_email} not found when updating Stripe metadata.")
+            print(f"User {user_email} not found when updating Stripe metadata.")
         except Exception as e:
-            print(f"⚠️ Error updating Stripe subscription metadata: {e}")
+            print(f"Error updating Stripe subscription metadata: {e}")
 
-    # ✅ 2️⃣ INVOICE PAYMENT SUCCEEDED (renewal)
     elif event_type == 'invoice.payment_succeeded':
         invoice = data
         subscription_id = invoice.get('subscription')
         if not subscription_id:
-            print("⚠️ invoice.payment_succeeded missing subscription_id.")
+            print("invoice.payment_succeeded missing subscription_id.")
             return JsonResponse({'status': 'ignored'}, status=200)
 
         try:
@@ -218,18 +194,17 @@ def stripe_webhook(request):
             if user_id and plan_data:
                 handle_subscription_renewal(user_id, subscription_id, json.dumps(plan_data))
         except Exception as e:
-            print(f"⚠️ Error processing invoice.payment_succeeded: {e}")
+            print(f"Error processing invoice.payment_succeeded: {e}")
 
-    # ✅ 3️⃣ PAYMENT FAILED
     elif event_type == 'invoice.payment_failed':
         invoice = data
         user_id = invoice.get('metadata', {}).get('user_id')
         if user_id:
             handle_failed_payment(user_id)
         else:
-            print("⚠️ invoice.payment_failed missing user_id in metadata.")
+            print("invoice.payment_failed missing user_id in metadata.")
 
-    # ✅ 4️⃣ SUBSCRIPTION DELETED (canceled or expired)
+
     elif event_type == 'customer.subscription.deleted':
         subscription = data
         subscription_id = subscription.get('id')
@@ -238,6 +213,6 @@ def stripe_webhook(request):
         if user_id:
             handle_subscription_deleted(user_id, subscription_id)
         else:
-            print(f"⚠️ Subscription deleted missing user_id: {subscription_id}")
+            print(f"Subscription deleted missing user_id: {subscription_id}")
 
     return JsonResponse({'status': 'success'}, status=200)

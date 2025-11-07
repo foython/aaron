@@ -1,4 +1,4 @@
-# accounts/serializers.py
+
 from rest_framework import serializers
 from datetime import date
 from django.contrib.auth import get_user_model
@@ -25,7 +25,6 @@ class CustomUserSerializer(serializers.ModelSerializer):
         }
 
     def create(self, validated_data):
-        # Hash the password before saving
         validated_data['password'] = make_password(validated_data['password'])
         return super().create(validated_data)
 

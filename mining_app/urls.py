@@ -65,7 +65,7 @@ urlpatterns = [
     path('happy-path-compliance-rate/<int:pk>/', views.happy_path_compliance_view, name='happy_path_compliance_rate'),
     path('simulation/', views.simulate_actual_path_view, name='simulate_process_view'),
     path('simulation/<int:pk>/', views.simulate_process_view, name='simulate_process_view'),
-    path('process-visual-view/<int:pk>/', views.process_visual_view, name='process_visual_view'),
+    # path('process-visual-view/<int:pk>/', views.process_visual_view, name='process_visual_view'),
 ]
 
 

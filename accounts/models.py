@@ -58,7 +58,6 @@ class CustomUser(AbstractUser, TimeStamp):
 
     @property
     def plan_upload_limit(self):
-        """Return how many projects the user can upload based on plan."""
         plan = (self.subsciption_plan_name or 'free').lower()
         if plan == 'medium':
             return 25
@@ -68,13 +67,11 @@ class CustomUser(AbstractUser, TimeStamp):
 
     @property
     def subscription_active(self):
-        """Check if the user’s plan is active and not expired."""
         if not self.subsciption_expires_on:
             return False
         return timezone.now() <= self.subsciption_expires_on
 
-    def activate_subscription(self, plan_name='free', duration_days=30):
-        """Activate or renew a plan (free, small, pro)."""
+    def activate_subscription(self, plan_name='free', duration_days=30):       
         self.subsciption_plan_name = plan_name
         self.is_subscribed = plan_name != 'free'
         self.subsciption_expires_on = timezone.now() + timedelta(days=duration_days)
@@ -82,14 +79,12 @@ class CustomUser(AbstractUser, TimeStamp):
         self.save()
 
     def expire_subscription(self):
-        """Forcefully expire the user’s current subscription."""
         self.subsciption_expires_on = timezone.now()
         self.subscription_status = 'expired'
         self.is_subscribed = False
         self.save()
 
     def remaining_uploads(self):
-        """Return how many processes the user can still upload."""
         from mining_app.models import Project        
         used = Project.objects.filter(user=self).count()
         return max(self.plan_upload_limit - used, 0)
