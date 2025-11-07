@@ -26,39 +26,88 @@ User = get_user_model()
 @csrf_exempt
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
-def create_subscription_session(request):  
+def create_subscription_session(request):
     try:
-        email = request.data["email"]
-        amount = int(float(request.data["amount"]) * 100)  # in cents
-        currency = request.data.get("currency", "usd")
-        plan_data = json.dumps(request.data.get("plan_data", {}))
-        user = User.objects.get(email=email)
-        if user.is_subscribed:
+        user = request.user
+        email = user.email
+        user_id = user.id
+
+        plan_type = request.data.get("plan_type", "").lower()
+        if plan_type not in ["small", "medium"]:
             return Response(
-                {"error": "User already has an active subscription."}, 
+                {"error": "Invalid plan type. Choose 'small' or 'medium'."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 1️⃣ Create or retrieve customer
+        # 🔒 Secure server-side plan definitions
+        PLAN_MAP = {
+            "small": {
+                "amount": 20000,  # 200 EUR in cents
+                "currency": "eur",
+                "name": "Small Enterprise",
+                "description": "Perfect for growing teams with moderate automation needs",
+                "limits": { 
+                    "duration": 30,                   
+                    "processes": 5,
+                    "chatbot_inquiries": 150
+                }
+            },
+            "medium": {
+                "amount": 75000,  # 750 EUR in cents
+                "currency": "eur",
+                "name": "Medium Enterprise",
+                "description": "Ideal for mid-sized companies scaling automation",
+                "limits": { 
+                    "duration": 30,                   
+                    "processes": 25,
+                    "chatbot_inquiries": 500
+                }
+            }
+        }
+
+        plan = PLAN_MAP[plan_type]
+
+        # 🧩 Prevent double subscription
+        if user.is_subscribed:
+            return Response(
+                {"error": "User already has an active subscription."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 🧩 Create or retrieve Stripe customer
         customers = stripe.Customer.list(email=email).data
-        customer = customers[0] if customers else stripe.Customer.create(email=email)
+        if customers:
+            customer = customers[0]
+        else:
+            customer = stripe.Customer.create(
+                email=email,
+                metadata={"user_id": str(user_id)}
+            )
 
-        # 2️⃣ Create dynamic price (recurring)
+        # 🧩 Create dynamic recurring price (monthly)
         price = stripe.Price.create(
-            unit_amount=amount,
-            currency=currency,
-            recurring={"interval": "year"},  # can be day, week, month, year
-            product_data={"name": "Custom Subscription Plan"},
-        )
+        unit_amount=plan["amount"],
+        currency=plan["currency"],
+        recurring={"interval": "month"},
+        product_data={
+            "name": plan["name"],
+            "metadata": {
+                "plan_type": plan_type,
+                "plan_description": plan["description"]
+            }
+        },
+    )
 
-        # 3️⃣ Create checkout session for subscription
+        # 🧩 Create checkout session
         session = stripe.checkout.Session.create(
             mode="subscription",
             customer=customer.id,
             line_items=[{"price": price.id, "quantity": 1}],
             metadata={
+                "user_id": user_id,
                 "user_email": email,
-                "plan_data": plan_data,
+                "plan_type": plan_type,
+                "limits": json.dumps(plan["limits"]),
             },
             success_url=f"http://localhost:7006/dashboard/priceing?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"http://10.10.13.92:8000/cancel",
@@ -85,81 +134,110 @@ def cancel(request):
 
 
 
-@api_view(['POST']) 
+@api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def cancel_subscription(request):
-    user_profile = request.user 
-    subscription_id = user_profile.subscription_id
-    
+    user_profile = request.user
+    subscription_id = getattr(user_profile, 'subscription_id', None)
+
     if not subscription_id:
         return Response(
-            {"Message": "No active subscription ID found for this account."}, 
+            {"message": "No active subscription ID found for this account."},
             status=status.HTTP_400_BAD_REQUEST
         )
 
     try:
-        # Soft cancellation: Cancels at the end of the billing period
-        canceled_subscription = stripe.Subscription.modify(
-            subscription_id,
-            cancel_at_period_end=True 
-        )
+        # Fetch the latest subscription state first (helps with idempotency)
+        sub = stripe.Subscription.retrieve(subscription_id)
 
-        # FIX 1: Safely retrieve current_period_end using getattr().
-        # If the attribute is missing, default to a message indicating the cancellation is pending.
-        # Note: Stripe timestamps are in seconds.
-        period_end_ts = getattr(canceled_subscription, 'current_period_end', None)
-
-        if period_end_ts:
-            # Convert timestamp to human-readable date for the message
-            period_end_date = timezone.datetime.fromtimestamp(period_end_ts, tz=timezone.utc).strftime('%Y-%m-%d')
-            message = f"Subscription cancellation scheduled. You will retain access until {period_end_date}."
-        else:
-            # Fallback message if the field is missing (e.g., if subscription was already weirdly configured)
-            message = "Subscription cancellation scheduled. Please check your account dashboard for the exact access end date."
-
-
-        # Update local DB status to reflect pending cancellation
-        user_profile.subscription_status = "pending_cancellation"
-        user_profile.save()
-        
-        return Response(
-            {"Message": message}, 
-            status=status.HTTP_200_OK
-        )
-
-    # FIX 2: Use the error path suggested by the traceback: stripe.api_resources.error or the base class
-    # We will use the base class for all API errors which is stripe.APIError or the class from your old code
-    # If the traceback suggests 'stripe' has no attribute 'error', we catch the base Stripe exception.
-    except stripe.InvalidRequestError as e: 
-    # If the above still fails, try 'except stripe.APIError as e:' or even 'except stripe.StripeError as e:'
-    
-        # Handle errors like 'No such subscription' or 'already canceled'
-        error_message = str(e)
-        if "No such subscription" in error_message or "already canceled" in error_message:
-            # Clean up local DB state
-            user_profile.subscription_status = "cancelled"
-            user_profile.subscription_id = None
-            user_profile.is_subscribed = False
-            user_profile.subsciption_expires_on = timezone.now()
-            user_profile.save()
+        # If already canceled, clean up locally and exit
+        if sub.get('status') == 'canceled':
+            _finalize_local_cancellation(user_profile)
             return Response(
-                {"Message": "Subscription was already cancelled or does not exist on Stripe. Local status updated."}, 
+                {"message": "Subscription already canceled on Stripe. Local status updated."},
                 status=status.HTTP_200_OK
             )
-        
-        # Other API errors (e.g., authentication)
+
+        # If already scheduled to cancel at period end, just inform the user
+        if sub.get('cancel_at_period_end') is True:
+            period_end_ts = sub.get('current_period_end')
+            msg = _pending_cancel_msg(period_end_ts)
+            # Reflect pending state locally (idempotent)
+            user_profile.subscription_status = "pending_cancellation"
+            user_profile.save(update_fields=["subscription_status"])
+            return Response({"message": msg}, status=status.HTTP_200_OK)
+
+        # Schedule cancellation at period end (soft cancel)
+        canceled_subscription = stripe.Subscription.modify(
+            subscription_id,
+            cancel_at_period_end=True
+        )
+
+        period_end_ts = canceled_subscription.get('current_period_end')
+        message = _pending_cancel_msg(period_end_ts)
+
+        # Update local DB to reflect pending cancellation
+        user_profile.subscription_status = "pending_cancellation"
+        user_profile.save(update_fields=["subscription_status"])
+
+        return Response({"message": message}, status=status.HTTP_200_OK)
+
+    # --- Correct Stripe exceptions (module: stripe.error) ---
+    except stripe.error.InvalidRequestError as e:
+        # Common cases: "No such subscription", "already canceled", bad ID, etc.
+        error_message = (e.user_message or str(e)).lower()
+
+        if "no such subscription" in error_message or "already canceled" in error_message:
+            _finalize_local_cancellation(user_profile)
+            return Response(
+                {"message": "Subscription not active on Stripe. Local status updated."},
+                status=status.HTTP_200_OK
+            )
+
         return Response(
-            {"Message": f"Stripe API Error: {e.user_message}"}, 
+            {"message": f"Stripe Invalid Request: {e.user_message or str(e)}"},
             status=status.HTTP_400_BAD_REQUEST
         )
-        
-    except Exception as e:
-        print(f"Unexpected error during cancellation: {e}")
+
+    except stripe.error.StripeError as e:
+        # Network/auth/other Stripe API issues
         return Response(
-            {"Message": "An unexpected server error occurred."}, 
+            {"message": f"Stripe API Error: {e.user_message or str(e)}"},
+            status=status.HTTP_502_BAD_GATEWAY
+        )
+
+    except Exception as e:
+        # Unknown server-side issue
+        return Response(
+            {"message": f"Server error during cancellation: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
+# ---- helpers ----
+
+def _pending_cancel_msg(period_end_ts: int | None) -> str:
+    if period_end_ts:
+        # Stripe timestamps are seconds since epoch (UTC)
+        period_end_date = datetime.fromtimestamp(period_end_ts, tz=py_tz.utc).strftime('%Y-%m-%d')
+        return f"Subscription cancellation scheduled. You will retain access until {period_end_date}."
+    return "Subscription cancellation scheduled. Check your dashboard for the exact access end date."
+
+def _finalize_local_cancellation(user_profile):
+    """
+    Immediate local downgrade used when Stripe reports the sub is gone/canceled.
+    """
+    user_profile.is_subscribed = False
+    user_profile.subscription_status = 'expired'
+    user_profile.subscription_id = None
+    user_profile.subsciption_expires_on = timezone.now()  # keep your existing field name
+    # If you track the plan name, downgrade it visibly
+    if hasattr(user_profile, 'subsciption_plan_name'):
+        user_profile.subsciption_plan_name = 'Free'
+    user_profile.save()
+
+
+    
 class IsAdminUser(BasePermission):
    
     def has_permission(self, request, view):

@@ -504,69 +504,62 @@ def resend_otp(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 @api_view(['POST'])
 def social_login_register(request):
-    email = request.data.get('email')
-
-    if User.objects.filter(username=email).count() == 0:
-        user = User()
-        user.username = email
-        user.email = email
-        user.is_verified = True
-        user.auth_provider = "social"
-        user.save()
-       
-    else:
-        user = User.objects.filter(username=email)[0]        
-
-        if user.auth_provider == "normal":
-            return Response(
-                {
-                    "Message": "Please use email/password based login!"
-                },
-                status=400
-            )
-
-    refresh = RefreshToken.for_user(user)
-    access_token = refresh.access_token
-    return Response({
-        'refresh': str(refresh),
-        'access': str(access_token),
-        'user_profile': CustomUserSerializer(user).data  # Use your custom User serializer here
-    }, status=status.HTTP_200_OK)
-
-
-@api_view(['POST'])
-def social_login_check(request):
     email = request.data.get('email')
 
     if not email:
         return Response({"Message": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    
+    user, created = User.objects.get_or_create(username=email, defaults={
+        "email": email,
+        "is_varified": True,  # fix your field name typo if needed
+        "auth_provider": "social",
+    })
+
+    if created:
+        user.set_unusable_password()
+        user.save()
+
+    elif user.auth_provider == "normal":
+        return Response(
+            {"Message": "Please use email/password based login!"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    refresh = RefreshToken.for_user(user)
+    return Response({
+        'refresh': str(refresh),
+        'access': str(refresh.access_token),
+        'user_profile': CustomUserSerializer(user).data
+    }, status=status.HTTP_200_OK)
+
+
+
+@api_view(['POST'])
+def social_login_check(request):
+    email = request.data.get('email')
+    if not email:
+        return Response({"Message": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
+
     try:
         user = User.objects.get(username=email)
-        user_profile = User.objects.get(user=user)
 
-        
-        if user_profile.auth_provider == "normal":
+        if user.auth_provider == "normal":
             return Response(
                 {"Message": "Please use email/password based login!"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-     
         refresh = RefreshToken.for_user(user)
-        access_token = refresh.access_token
-
         return Response({
             'refresh': str(refresh),
-            'access': str(access_token),
-            'user_profile': User(user_profile).data
+            'access': str(refresh.access_token),
+            'user_profile': CustomUserSerializer(user).data
         }, status=status.HTTP_200_OK)
 
     except User.DoesNotExist:
-        
         return Response(
             {"Message": "User not registered. Please sign up first."},
             status=status.HTTP_404_NOT_FOUND

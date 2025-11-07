@@ -3,6 +3,8 @@ from django.db import models
 from django.contrib.auth.models import AbstractUser
 import random
 import string
+from django.utils import timezone
+from datetime import timedelta
 
 
 # Create your models here.
@@ -36,6 +38,7 @@ class CustomUser(AbstractUser, TimeStamp):
     processes = models.IntegerField(default=0)
     chatbot_inquiries = models.IntegerField(default=0)
     is_subscribed = models.BooleanField(default=False)
+    subsciption_plan_name = models.CharField(max_length=32, default='free')
     subsciption_expires_on = models.DateTimeField(blank=True, null=True)
     subscription_status = models.CharField(max_length=100, blank=True,)
     subscription_id = models.CharField(max_length=100, blank=True, null=True)
@@ -49,5 +52,47 @@ class CustomUser(AbstractUser, TimeStamp):
         return otp
     
     
+    def __str__(self):
+        return f"{self.id} {self.username}"
+    
+
+    @property
+    def plan_upload_limit(self):
+        """Return how many projects the user can upload based on plan."""
+        plan = (self.subsciption_plan_name or 'free').lower()
+        if plan == 'medium':
+            return 25
+        elif plan == 'small':
+            return 5
+        return 2  # default free plan
+
+    @property
+    def subscription_active(self):
+        """Check if the user’s plan is active and not expired."""
+        if not self.subsciption_expires_on:
+            return False
+        return timezone.now() <= self.subsciption_expires_on
+
+    def activate_subscription(self, plan_name='free', duration_days=30):
+        """Activate or renew a plan (free, small, pro)."""
+        self.subsciption_plan_name = plan_name
+        self.is_subscribed = plan_name != 'free'
+        self.subsciption_expires_on = timezone.now() + timedelta(days=duration_days)
+        self.subscription_status = 'active'
+        self.save()
+
+    def expire_subscription(self):
+        """Forcefully expire the user’s current subscription."""
+        self.subsciption_expires_on = timezone.now()
+        self.subscription_status = 'expired'
+        self.is_subscribed = False
+        self.save()
+
+    def remaining_uploads(self):
+        """Return how many processes the user can still upload."""
+        from mining_app.models import Project        
+        used = Project.objects.filter(user=self).count()
+        return max(self.plan_upload_limit - used, 0)
+
     def __str__(self):
         return f"{self.id} {self.username}"

@@ -75,6 +75,7 @@ class HappyPath(models.Model):
     activity_name = models.CharField(max_length=100)   
     average_time_minutes = models.DecimalField(max_digits=8, decimal_places=2)
     cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    description = models.JSONField(blank=True, null=True)
 
     class Meta:        
         ordering = ['serial_number']
@@ -82,9 +83,13 @@ class HappyPath(models.Model):
     def __str__(self):
         return f"Step {self.serial_number}: {self.activity_name} ({self.average_time_minutes} min)"
     
+    def save(self, *args, **kwargs):
+        if isinstance(self.description, str):
+            self.description = [self.description]
+        super().save(*args, **kwargs)
+    
 
 class Visualization(TimeStamp):
-    # This model is correct.
     type = models.CharField(max_length=128)
 
     def __str__(self):
