@@ -124,7 +124,16 @@ def normal_login(request):
     password = request.data.get('password')    
 
     if not email or not password:
-        return Response({"Message": "Both Username and password are required."}, status=400)
+        return Response({"Message": "Both Username and password are required."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    
+    user_instance = User.objects.filter(username=email).first() 
+
+    if not user_instance:
+         return Response({"Message": "Invalid credentials or user not found."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if not user_instance.is_varified:
+        return Response({"Message": "Please verify OTP"}, status=status.HTTP_403_FORBIDDEN)
   
     user = authenticate(username=email, password=password)
     
@@ -137,8 +146,8 @@ def normal_login(request):
             'access': str(access_token),          
             'user_profile': CustomUserSerializer(user).data
         }, status=status.HTTP_200_OK)
-    else:
-        return Response({"Message": "Invalid credentials."}, status=401)
+    else:        
+        return Response({"Message": "Invalid password."}, status=status.HTTP_401_UNAUTHORIZED)
     
 
 @api_view(['POST'])

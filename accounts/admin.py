@@ -10,7 +10,7 @@ class CustomUserAdmin(UserAdmin):
     list_filter = ('auth_provider', 'is_active', 'is_staff')
 
     fieldsets = (
-        (None, {'fields': ('username', 'email', 'auth_provider', 'password')}),
+        (None, {'fields': ('username', 'email', 'auth_provider', 'password', 'is_varified')}),
         ('Personal Info', {'fields': ('first_name', 'last_name', 'gender', 'profession', 'company_name', 'date_of_birth', 'profile_picture', 'phone_number', 'location', 'country', 'time_zone', 'upload_logo', 'about_yourself', 'professional_background')}),
         ('Subscription', {'fields': ('is_subscribed','subsciption_plan_name', 'subsciption_expires_on', 'subscription_status', 'subscription_id')}),
         ('Permissions', {'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions')}),

@@ -5,6 +5,7 @@ import math
 from .models import CostPerProcess
 
 def calculate_net_working_time(start, end, start_h, end_h): return (end - start).total_seconds()
+
 def robust_to_datetime(series, utc=True):
     if series.empty: return series
     try:
@@ -15,6 +16,8 @@ def robust_to_datetime(series, utc=True):
     if utc and not dt_series.dt.tz: dt_series = dt_series.dt.tz_localize('UTC', errors='coerce')
     return dt_series
 
+
+
 def analyze_standard_path_performance_json(
     file_path,
     case_id_col='case_id',
@@ -22,21 +25,15 @@ def analyze_standard_path_performance_json(
     start_time_col='timestamp_start',
     complete_time_col='timestamp_complete'
 ):
-    """
-    Analyze standard (most frequent) process path and calculate average time per step.
-    Automatically supports custom column names (like DefineColumns in your project).
-    Returns JSON (list of steps with serial_number, activity_name, average_time_minutes).
-    """
+ 
     try:
         df = pd.read_csv(file_path)
     except Exception as e:
         print(f"Error reading file: {e}")
         return []
 
-    # --- Auto-correct columns (flexible handling for naming differences) ---
     rename_map = {}
 
-    # Normalize activity column
     if activity_col not in df.columns:
         possible_activity_cols = ["activity", "activity_name", "step", "task"]
         for col in possible_activity_cols:
@@ -44,7 +41,6 @@ def analyze_standard_path_performance_json(
                 rename_map[col] = activity_col
                 break
 
-    # Normalize timestamp columns
     possible_start_cols = ["timestamp_start", "start_time", "StartTime", "begin"]
     possible_end_cols = ["timestamp_end", "timestamp_complete", "complete_time", "end_time", "finish"]
 
@@ -60,7 +56,6 @@ def analyze_standard_path_performance_json(
                 rename_map[col] = complete_time_col
                 break
 
-    # Normalize case_id
     if case_id_col not in df.columns:
         possible_case_cols = ["case_id", "Case ID", "case", "process_id"]
         for col in possible_case_cols:
@@ -70,18 +65,15 @@ def analyze_standard_path_performance_json(
 
     df.rename(columns=rename_map, inplace=True)
 
-    # --- Validate required columns ---
     required = [case_id_col, activity_col, start_time_col, complete_time_col]
     missing = [col for col in required if col not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns: {missing}. Columns found: {list(df.columns)}")
 
-    # --- Calculate durations ---
     df[start_time_col] = pd.to_datetime(df[start_time_col])
     df[complete_time_col] = pd.to_datetime(df[complete_time_col])
     df["duration"] = df[complete_time_col] - df[start_time_col]
 
-    # --- Find Most Frequent Path ---
     df_paths = df.groupby(case_id_col)[activity_col].apply(lambda x: " -> ".join(x)).reset_index()
     df_variants = df_paths[activity_col].value_counts().reset_index()
     df_variants.columns = ["Process Path (Variant)", "Frequency"]
@@ -92,7 +84,6 @@ def analyze_standard_path_performance_json(
     )
     standard_path_activities = [a.strip() for a in most_standard_path_string.split("->")]
 
-    # --- Average Duration Per Step ---
     df_avg_time = df.groupby(activity_col)["duration"].mean().reset_index()
     df_avg_time.rename(columns={"duration": "Average Time (Duration)"}, inplace=True)
 
@@ -104,14 +95,12 @@ def analyze_standard_path_performance_json(
     )
     df_result = df_filtered.sort_values("order").drop(columns=["order"])
 
-    # --- Convert to minutes ---
     df_result["average_time_minutes"] = (
         df_result["Average Time (Duration)"].dt.total_seconds() / 60
     ).round(2)
     df_result["serial_number"] = range(1, len(df_result) + 1)
     df_result.rename(columns={activity_col: "activity_name"}, inplace=True)
 
-    # --- Final Output ---
     df_final = df_result[["serial_number", "activity_name", "average_time_minutes"]].copy()
     json_output = df_final.to_dict("records")
 
@@ -161,6 +150,8 @@ def calculate_net_working_time(start_dt, end_dt, start_hour, end_hour):
 
     return total_seconds
 
+
+
 def get_average_cycle_time_hours(
     event_log_data,
     case_id_col,
@@ -169,7 +160,6 @@ def get_average_cycle_time_hours(
     office_start_hour,
     office_end_hour
 ):
-    """Calculate average cycle time (hours) considering working hours and weekends."""
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
 
@@ -210,7 +200,6 @@ def get_median_cycle_time_hours(
     office_start_hour,
     office_end_hour
 ):
-    """Calculate median cycle time (hours) considering working hours and weekends."""
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
 
@@ -250,10 +239,6 @@ def get_minimum_cycle_time_hours(
     office_start_hour,
     office_end_hour
 ):
-    """
-    Calculate the minimum cycle time (hours) among cases that reached the expected final activity.
-    Uses same logic as median function + adds final activity filtering.
-    """
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
 
@@ -571,10 +556,7 @@ def get_average_idle_time_hours(
     office_start_hour,
     office_end_hour
 ):
-    """
-    Calculate the average idle time (in hours) per case,
-    considering working hours and excluding weekends.
-    """
+    
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
 
@@ -631,7 +613,106 @@ def get_average_idle_time_hours(
         return json.dumps({
             "Error": f"Failed to calculate average idle time per case: {e}"
         }, indent=4)
-    
+
+
+# def calculate_average_idle_time_metrics(
+#     event_log_data,
+#     case_id_col,    
+#     start_time_col,
+#     complete_time_col,
+#     office_start_hour,
+#     office_end_hour
+# ):
+#     """
+#     Calculates:
+#       - Average idle time per case (hours)
+#       - Total idle time across all cases (hours)
+#       - Average idle ratio (%) between working and idle time
+#       - Total number of unique cases
+#     """
+
+#     if not event_log_data:
+#         return json.dumps({"Error": "Event log data is empty."}, indent=4)
+
+#     try:
+#         df = pd.DataFrame(event_log_data)
+
+#         # --- Normalize and clean data ---
+#         df[case_id_col] = df[case_id_col].astype(str).str.strip().str.lower()
+#         df[start_time_col] = pd.to_datetime(df[start_time_col], utc=True, errors="coerce")
+#         df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True, errors="coerce")
+#         df = df.dropna(subset=[case_id_col, start_time_col, complete_time_col])
+
+#         # --- Step 1️⃣: Compute total working duration per activity ---
+#         df["Activity_Working_Seconds"] = df.apply(
+#             lambda r: calculate_net_working_time(
+#                 r[start_time_col],
+#                 r[complete_time_col],
+#                 office_start_hour,
+#                 office_end_hour
+#             ),
+#             axis=1
+#         )
+
+#         # --- Step 2️⃣: Compute total case working duration (start → end) ---
+#         case_start = (
+#             df.groupby(case_id_col)[start_time_col].min().rename("Case_Start")
+#         )
+#         case_end = (
+#             df.groupby(case_id_col)[complete_time_col].max().rename("Case_End")
+#         )
+
+#         df_case = pd.merge(case_start, case_end, on=case_id_col, validate="one_to_one")
+
+#         df_case["Case_Working_Seconds"] = df_case.apply(
+#             lambda r: calculate_net_working_time(
+#                 r["Case_Start"],
+#                 r["Case_End"],
+#                 office_start_hour,
+#                 office_end_hour
+#             ),
+#             axis=1
+#         )
+
+#         # --- Step 3️⃣: Sum of all activities per case ---
+#         df_activity_sum = (
+#             df.groupby(case_id_col)["Activity_Working_Seconds"]
+#               .sum()
+#               .rename("Total_Activity_Working_Seconds")
+#         )
+
+#         # --- Step 4️⃣: Merge and calculate idle time ---
+#         df_case = pd.merge(df_case, df_activity_sum, on=case_id_col, how="left")
+
+#         df_case["Idle_Seconds"] = (
+#             df_case["Case_Working_Seconds"] - df_case["Total_Activity_Working_Seconds"]
+#         ).clip(lower=0)
+
+#         df_case["Idle_Hours"] = df_case["Idle_Seconds"] / 3600
+#         df_case["Idle_Ratio"] = (
+#             df_case["Idle_Seconds"] / df_case["Case_Working_Seconds"]
+#         ).fillna(0)
+
+#         # --- Step 5️⃣: Aggregate metrics ---
+#         avg_idle_hours = round(df_case["Idle_Hours"].mean(), 2)
+#         total_idle_hours = round(df_case["Idle_Hours"].sum(), 2)
+#         avg_idle_ratio_pct = round(df_case["Idle_Ratio"].mean() * 100, 2)
+#         total_cases = int(len(df_case))
+
+#         # --- Step 6️⃣: Final output ---
+#         result = {
+#             "Average_Idle_Time_Hours_Per_Case": avg_idle_hours,
+#             "Total_Idle_Time_Hours": total_idle_hours,
+#             "Average_Idle_Ratio_Percentage": avg_idle_ratio_pct,
+#             "Total_Cases": total_cases
+#         }
+
+#         return json.dumps(result, indent=4)
+
+#     except Exception as e:
+#         return json.dumps({
+#             "Error": f"Failed to calculate idle time metrics: {e}"
+#         }, indent=4)
 
 
 def calculate_average_idle_time_metrics(
@@ -642,10 +723,7 @@ def calculate_average_idle_time_metrics(
     office_start_hour,
     office_end_hour
 ):
-    """
-    Calculate the average idle time (in hours) per case and the average idle ratio (%),
-    considering working hours and excluding weekends.
-    """
+  
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
     
@@ -710,10 +788,7 @@ def calculate_average_idle_time_metrics(
 
 
 def calculate_loop_metrics(event_log_data, case_id_col, activity_col):
-    """
-    Calculate loop metrics for process mining.
-    Includes per-activity loop occurrence counts.
-    """
+   
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
 
@@ -792,12 +867,7 @@ def calculate_bottleneck_metrics(
     start_time_col,
     complete_time_col
 ):
-    """
-    Calculate bottleneck metrics with occurrence count.
-    Adds 'Bottleneck_Occurrence_Count' for how many times
-    the main bottleneck activity exceeded its average time.
-    """
-
+  
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
     
@@ -907,6 +977,8 @@ def calculate_bottleneck_metrics(
             indent=4
         )
     
+
+
 def calculate_largest_bottlenecks(
     event_log_data,
     case_id_col,
@@ -917,10 +989,7 @@ def calculate_largest_bottlenecks(
     office_end_hour,
     top_n=5
 ):
-    """
-    Identify the largest bottlenecks based on average activity duration,
-    considering office hours and excluding weekends.
-    """
+    
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
     
@@ -1113,11 +1182,7 @@ def calculate_average_activity_duration(
     office_start_hour,
     office_end_hour
 ):
-    """
-    Calculates the average activity duration (in hours) for each activity,
-    considering working hours and excluding weekends.
-    Returns data ready for visualization (e.g., bar chart).
-    """
+    
     import pandas as pd, json
 
     if not event_log_data:
@@ -1185,6 +1250,7 @@ def calculate_average_activity_duration(
     except Exception as e:
         return json.dumps({"Error": f"An error occurred during average activity duration calculation: {e}"}, indent=4)
     
+
 
 def calculate_process_variants(
     event_log_data,
@@ -1460,7 +1526,7 @@ def calculate_variant_change_over_time(
     case_id_col,
     activity_col,
     complete_time_col,
-    time_period='W' # 'D' for Daily, 'W' for Weekly, 'M' for Monthly
+    time_period='W'  # 'D' for Daily, 'W' for Weekly, 'M' for Monthly
 ):
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
@@ -1470,37 +1536,46 @@ def calculate_variant_change_over_time(
 
     try:
         df = pd.DataFrame(event_log_data)
-        
-        required_cols = [case_id_col, activity_col, complete_time_col] 
-        if not all(col in df.columns for col in required_cols):
-             missing = [col for col in required_cols if col not in df.columns]
-             return json.dumps({"Error": f"Missing required columns in data: {missing}"}, indent=4)
 
-        df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True)
+        # --- Validate required columns ---
+        required_cols = [case_id_col, activity_col, complete_time_col]
+        missing = [col for col in required_cols if col not in df.columns]
+        if missing:
+            return json.dumps({"Error": f"Missing required columns: {missing}"}, indent=4)
 
+        # --- Convert timestamps ---
+        df[complete_time_col] = pd.to_datetime(df[complete_time_col], utc=True, errors='coerce')
+        df = df.dropna(subset=[case_id_col, activity_col, complete_time_col])
+
+        # --- Sort by case and time ---
         df_sorted = df.sort_values(by=[case_id_col, complete_time_col])
+
+        # --- Build variants per case ---
         case_traces = df_sorted.groupby(case_id_col).agg(
             Variant=(activity_col, lambda x: ' -> '.join(x)),
-            Case_End_Time=(complete_time_col, 'max') 
+            Case_End_Time=(complete_time_col, 'max')
         ).reset_index()
 
+        # --- Assign time period buckets ---
         case_traces['Time_Period'] = case_traces['Case_End_Time'].dt.to_period(time_period.upper())
 
+        # --- Group by period and compute stats ---
         time_trend = case_traces.groupby('Time_Period').agg(
             Unique_Variant_Count=('Variant', 'nunique'),
-            Total_Cases_Completed=('case_id', 'count')
+            Total_Cases_Completed=(case_id_col, 'count')
         ).reset_index()
 
+        # --- Calculate complexity ratio ---
         time_trend['Variant_Complexity_Index'] = (
             time_trend['Unique_Variant_Count'] / time_trend['Total_Cases_Completed']
-        )
+        ).fillna(0)
 
         time_trend['Time_Period_Label'] = time_trend['Time_Period'].astype(str)
- 
+
         time_trend_list = time_trend[[
-            'Time_Period_Label', 
-            'Unique_Variant_Count', 
-            'Total_Cases_Completed', 
+            'Time_Period_Label',
+            'Unique_Variant_Count',
+            'Total_Cases_Completed',
             'Variant_Complexity_Index'
         ]].to_dict('records')
 
@@ -1511,12 +1586,13 @@ def calculate_variant_change_over_time(
             "Time_Aggregation_Level": time_period.upper(),
             "Variant_Change_Trend": time_trend_list
         }
-        
+
         return json.dumps(result, indent=4)
 
     except Exception as e:
         return json.dumps({"Error": f"An error occurred during VCI over time calculation: {e}"}, indent=4)
-    
+
+
 
 
 def calculate_cases_following_top_variant(
@@ -1605,6 +1681,8 @@ def calculate_max_steps_in_a_case(event_log_data, case_id_col):
         return json.dumps({"Error": f"An error occurred during max steps calculation: {e}"}, indent=4)
 
 
+
+
 def seconds_to_dhms(seconds):
 
     if seconds < 0:
@@ -1631,6 +1709,8 @@ def seconds_to_dhms(seconds):
         parts.append(f"{round(seconds, 2)}s")
 
     return sign + " ".join(parts)
+
+
 
 
 def calculate_average_time_saved_potential(
@@ -1718,6 +1798,8 @@ def calculate_average_time_saved_potential(
         }, indent=4)
 
 
+
+
 def calculate_time_saved_potential(
     event_log_data, 
     case_id_col, 
@@ -1757,9 +1839,7 @@ def calculate_time_saved_potential(
         avg_time_saved_potential_seconds = max(0, mean_cycle_time_seconds - min_cycle_time_seconds)
 
         total_time_saved_potential_seconds = avg_time_saved_potential_seconds * total_cases
-
-   
-        
+          
         result = {
             "Total_Cases_Analyzed": int(total_cases),
             
@@ -1820,7 +1900,6 @@ def calculate_activity_frequency_distribution(event_log_data, activity_col):
     except Exception as e:
         return json.dumps({"Error": f"An error occurred during activity frequency calculation: {e}"}, indent=4)
     
-
 
 
 
@@ -2102,17 +2181,13 @@ def calculate_happy_path_deviation(
 
 
 
-
 def calculate_skipped_steps_rate(
     event_log_data, 
     case_id_col, 
     activity_col, 
     happy_path_data
 ):
-    """
-    Calculates the percentage of cases that skipped at least one required activity
-    defined in the Happy Path.
-    """
+   
     if not event_log_data:
         return json.dumps({"Error": "Event log data is empty."}, indent=4)
 
@@ -2298,27 +2373,27 @@ def calculate_case_throughput_and_dropouts(
 import math
 from datetime import timedelta
 
-def seconds_to_dhms(seconds):
-    """Converts a total number of seconds into a days, hours, minutes, seconds string."""
-    seconds = abs(seconds)
-    days = math.floor(seconds / (3600 * 24))
-    seconds %= (3600 * 24)
-    hours = math.floor(seconds / 3600)
-    seconds %= 3600
-    minutes = math.floor(seconds / 60)
-    seconds %= 60
+# def seconds_to_dhms(seconds):
+#     """Converts a total number of seconds into a days, hours, minutes, seconds string."""
+#     seconds = abs(seconds)
+#     days = math.floor(seconds / (3600 * 24))
+#     seconds %= (3600 * 24)
+#     hours = math.floor(seconds / 3600)
+#     seconds %= 3600
+#     minutes = math.floor(seconds / 60)
+#     seconds %= 60
     
-    parts = []
-    if days > 0:
-        parts.append(f"{days}d")
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0:
-        parts.append(f"{minutes}m")
-    if seconds > 0 or not parts:
-        parts.append(f"{round(seconds, 2)}s")
+#     parts = []
+#     if days > 0:
+#         parts.append(f"{days}d")
+#     if hours > 0:
+#         parts.append(f"{hours}h")
+#     if minutes > 0:
+#         parts.append(f"{minutes}m")
+#     if seconds > 0 or not parts:
+#         parts.append(f"{round(seconds, 2)}s")
 
-    return " ".join(parts)
+#     return " ".join(parts)
 
 
 def analyze_and_structure_process_datas(
@@ -2815,27 +2890,27 @@ import numpy as np
 from datetime import timedelta
 
 # --- Helper Function for Formatting Time ---
-def seconds_to_dhms(seconds):
+# def seconds_to_dhms(seconds):
     
-    seconds = abs(seconds)
-    days = math.floor(seconds / (3600 * 24))
-    seconds %= (3600 * 24)
-    hours = math.floor(seconds / 3600)
-    seconds %= 3600
-    minutes = math.floor(seconds / 60)
-    seconds %= 60
+#     seconds = abs(seconds)
+#     days = math.floor(seconds / (3600 * 24))
+#     seconds %= (3600 * 24)
+#     hours = math.floor(seconds / 3600)
+#     seconds %= 3600
+#     minutes = math.floor(seconds / 60)
+#     seconds %= 60
     
-    parts = []
-    if days > 0:
-        parts.append(f"{days}d")
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0:
-        parts.append(f"{minutes}m")
-    if seconds > 0 or not parts:
-        parts.append(f"{round(seconds, 2)}s")
+#     parts = []
+#     if days > 0:
+#         parts.append(f"{days}d")
+#     if hours > 0:
+#         parts.append(f"{hours}h")
+#     if minutes > 0:
+#         parts.append(f"{minutes}m")
+#     if seconds > 0 or not parts:
+#         parts.append(f"{round(seconds, 2)}s")
 
-    return " ".join(parts)
+#     return " ".join(parts)
 
 
 
