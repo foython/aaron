@@ -2370,6 +2370,8 @@ def calculate_case_throughput_and_dropouts(
             "Error": f"An error occurred during throughput/dropout calculation: {e}"
         }, indent=4)
 
+
+
 import math
 from datetime import timedelta
 
