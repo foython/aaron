@@ -2849,30 +2849,70 @@ def export_kpi_benchmark_pdf(request, pk=None):
  
 from .simulation import simulate_process_analysis
 from django.shortcuts import get_object_or_404
-from .ai import parse_process_intent
+from .ai import dynamic_process_chatbot
+
+
+# Define this helper function outside your views
+def get_analysis_data(pk):
+    """
+    Helper function to perform the analysis logic.
+    Returns a python dictionary (not a Response object).
+    """
+    columns = DefineColumns.objects.get(project=pk)
+    project = Project.objects.get(pk=pk)
+    file_path = project.csv_file.path
+    
+    # Read CSV
+    df_log = pd.read_csv(file_path)
+    event_log_data = df_log.to_dict('records')
+
+    # Perform Analysis
+    result = analyze_and_structure_process_datas(
+        event_log_data,
+        columns.case_id,
+        columns.activity,
+        columns.timestamp_start,
+        columns.timestamp_end,
+        project=project,
+    )
+    
+    result_data = json.loads(result)
+
+    if "global_metrics" in result_data:
+        result_data["global_metrics"]["happy_path"] = columns.happy_path
+    else:
+        result_data["global_metrics"] = {"happy_path": columns.happy_path}
+
+    return result_data
 
 
 @api_view(['POST'])
 def simulate_process_view(request, pk):
-    """
-    POST: Simulate process improvement for a project.
-    Accepts JSON body parameters like:
-    {
-        "remove_bottlenecks": true,
-        "remove_loops": false,
-        "remove_dropouts": true,
-        "target_activity": "Payment Monitoring"
-    }
-    """
+ 
     try:
         project = get_object_or_404(Project, pk=pk, user=request.user)
 
         text = request.data.get('text')
         process = request.data.get('selected', None)
-        parameter = parse_process_intent(text)       
-        remove_bottlenecks = parameter['remove_bottlenecks']
-        remove_loops = parameter['remove_loops']
-        remove_dropouts = parameter['remove_dropouts']
+        data = get_analysis_data(pk)        
+        parameter = dynamic_process_chatbot(text, data)
+        message = parameter.get('ai_response', None)
+        simulation = parameter.get('backend_output', None)
+        if not simulation:
+             return Response(
+            {
+                "message": message,
+                "project_id": project.id,
+                "process_name": project.process,
+                # "simulation_result": simulated_result
+            },
+            status=status.HTTP_200_OK
+        )
+
+        remove_bottlenecks = simulation.get('remove_bottlenecks')
+        remove_loops = simulation.get('remove_loops')
+        remove_dropouts = simulation.get('remove_dropouts')
+
        
         simulated_result = simulate_process_analysis(
             project=project,
@@ -2884,7 +2924,7 @@ def simulate_process_view(request, pk):
 
         return Response(
             {
-                "message": "Process simulation completed successfully.",
+                "message": message,
                 "project_id": project.id,
                 "process_name": project.process,
                 "simulation_result": simulated_result
